@@ -483,7 +483,7 @@ export default function ProductEditorScreen() {
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#f8fafc' },
   container: { flex: 1 },
-  content: { padding: 16, paddingBottom: 60 },
+  content: { padding: 16, paddingBottom: 100 },
   
   sectionCard: { padding: 20, marginBottom: 20, borderRadius: 16, backgroundColor: '#ffffff', shadowColor: '#94a3b8', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 8, elevation: 2, borderWidth: 1, borderColor: '#f1f5f9' },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 14, paddingBottom: 16, borderBottomWidth: 1, borderBottomColor: '#f1f5f9' },

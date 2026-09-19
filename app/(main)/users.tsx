@@ -119,27 +119,39 @@ export default function UsersScreen() {
         style={styles.searchInput}
       />
 
-      <View style={styles.statsContainer}>
-        <Card style={styles.statCard}>
-          <View style={[styles.iconContainer, { backgroundColor: '#10b981' }]}>
-            <MaterialCommunityIcons name="pulse" size={24} color="#fff" />
-          </View>
-          <View style={{ flex: 1, marginLeft: 12 }}>
-            <Typography variant="h2" weight="bold" color="#064e3b">{presence.activeVisitors || 0}</Typography>
-            <Typography variant="label" weight="bold" color="#047857">VISITORS ONLINE</Typography>
-          </View>
-        </Card>
-        
-        <Card style={styles.statCard}>
-          <View style={[styles.iconContainer, { backgroundColor: '#3b82f6' }]}>
-            <MaterialCommunityIcons name="account-check" size={24} color="#fff" />
-          </View>
-          <View style={{ flex: 1, marginLeft: 12 }}>
-            <Typography variant="h2" weight="bold" color="#1e3a8a">{presence.activeCustomers || 0}</Typography>
-            <Typography variant="label" weight="bold" color="#1d4ed8">CUSTOMERS ONLINE</Typography>
-          </View>
-        </Card>
-      </View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 24 }}>
+        <View style={styles.statsContainer}>
+          <Card style={styles.statCard}>
+            <View style={[styles.iconContainer, { backgroundColor: '#8b5cf6' }]}>
+              <MaterialCommunityIcons name="account-group" size={24} color="#fff" />
+            </View>
+            <View style={{ flex: 1, marginLeft: 12 }}>
+              <Typography variant="h2" weight="bold" color="#4c1d95">{users.length}</Typography>
+              <Typography variant="label" weight="bold" color="#6d28d9">TOTAL USERS</Typography>
+            </View>
+          </Card>
+
+          <Card style={styles.statCard}>
+            <View style={[styles.iconContainer, { backgroundColor: '#10b981' }]}>
+              <MaterialCommunityIcons name="pulse" size={24} color="#fff" />
+            </View>
+            <View style={{ flex: 1, marginLeft: 12 }}>
+              <Typography variant="h2" weight="bold" color="#064e3b">{presence.activeVisitors || 0}</Typography>
+              <Typography variant="label" weight="bold" color="#047857">VISITORS ONLINE</Typography>
+            </View>
+          </Card>
+          
+          <Card style={styles.statCard}>
+            <View style={[styles.iconContainer, { backgroundColor: '#3b82f6' }]}>
+              <MaterialCommunityIcons name="account-check" size={24} color="#fff" />
+            </View>
+            <View style={{ flex: 1, marginLeft: 12 }}>
+              <Typography variant="h2" weight="bold" color="#1e3a8a">{presence.activeCustomers || 0}</Typography>
+              <Typography variant="label" weight="bold" color="#1d4ed8">CUSTOMERS ONLINE</Typography>
+            </View>
+          </Card>
+        </View>
+      </ScrollView>
 
       <View style={styles.listHeader}>
         <Typography variant="label" weight="bold" color="#94a3b8">
@@ -227,11 +239,11 @@ export default function UsersScreen() {
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#f8fafc' },
   container: { flex: 1, backgroundColor: '#f8fafc' },
-  content: { padding: 16, paddingBottom: 40 },
+  content: { padding: 16, paddingBottom: 100 },
   header: { marginBottom: 20 },
   searchInput: { backgroundColor: '#fff' },
-  statsContainer: { flexDirection: 'row', gap: 12, marginBottom: 24 },
-  statCard: { flex: 1, flexDirection: 'row', alignItems: 'center', padding: 12 },
+  statsContainer: { flexDirection: 'row', gap: 12 },
+  statCard: { flex: 1, flexDirection: 'row', alignItems: 'center', padding: 12, minWidth: 160 },
   iconContainer: { width: 40, height: 40, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
   listHeader: { alignItems: 'flex-end', marginBottom: 12 },
   loadingContainer: { padding: 40 },

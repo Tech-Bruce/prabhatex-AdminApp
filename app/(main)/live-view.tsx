@@ -288,7 +288,7 @@ const styles = StyleSheet.create({
   dayBtnActive: { backgroundColor: '#1e293b' },
   
   container: { flex: 1 },
-  scrollContent: { padding: 20, paddingBottom: 40 },
+  scrollContent: { padding: 20, paddingBottom: 100 },
   loaderWrap: { height: 300, justifyContent: 'center', alignItems: 'center' },
   
   kpiCard: { padding: 0, overflow: 'hidden', marginBottom: 20 },

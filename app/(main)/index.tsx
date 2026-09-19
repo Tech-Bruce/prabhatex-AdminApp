@@ -477,7 +477,7 @@ const styles = StyleSheet.create({
   periodBtnActive: { backgroundColor: '#1e293b' },
   
   scrollArea: { flex: 1 },
-  scrollContent: { padding: 20, paddingBottom: 40 },
+  scrollContent: { padding: 20, paddingBottom: 100 },
   
   loaderWrap: { flex: 1, justifyContent: 'center', alignItems: 'center', height: 300 },
   

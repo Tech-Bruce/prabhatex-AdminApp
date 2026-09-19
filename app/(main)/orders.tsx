@@ -499,7 +499,7 @@ const styles = StyleSheet.create({
   },
   listContent: {
     paddingHorizontal: 16,
-    paddingBottom: 80,
+    paddingBottom: 100,
   },
   card: {
     backgroundColor: '#ffffff',
