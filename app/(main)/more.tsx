@@ -1,5 +1,5 @@
 import React from 'react';
-import { ScrollView, StyleSheet, TouchableOpacity, View } from 'react-native';
+import { ScrollView, StyleSheet, TouchableOpacity, View, Image } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Typography } from '../../src/components/Typography';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -33,7 +33,11 @@ export default function MoreScreen() {
         
         <View style={styles.headerProfile}>
           <View style={styles.avatarContainer}>
-            <Typography variant="h2" color="#300000" style={styles.avatarText}>P</Typography>
+            <Image 
+              source={require('../../assets/logo.png')} 
+              style={{ width: '100%', height: '100%', borderRadius: 20 }} 
+              resizeMode="contain"
+            />
           </View>
           <View style={styles.profileText}>
             <Typography variant="h3" color="#ffffff">Prabha Executive</Typography>

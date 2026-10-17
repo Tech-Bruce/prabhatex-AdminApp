@@ -29,6 +29,7 @@ export default function UsersScreen() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [presence, setPresence] = useState<Presence>({ activeVisitors: 0, activeCustomers: 0, activeUserIds: [] });
+  const [showOnlineOnly, setShowOnlineOnly] = useState(false);
 
   useEffect(() => {
     fetchUsers();
@@ -91,6 +92,7 @@ export default function UsersScreen() {
 
   const normalizedSearch = searchTerm.trim().toLowerCase();
   const filteredUsers = users.filter((user) => {
+    if (showOnlineOnly && !activeUserIds.has(String(user.id))) return false;
     if (!normalizedSearch) return true;
     const phone = String(user.phoneNumber || '').toLowerCase();
     return (
@@ -112,12 +114,21 @@ export default function UsersScreen() {
         </Typography>
       </View>
 
-      <Input
-        value={searchTerm}
-        onChangeText={setSearchTerm}
-        placeholder="Search name, email, or mobile..."
-        style={styles.searchInput}
-      />
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+        <View style={{ flex: 1 }}>
+          <Input
+            value={searchTerm}
+            onChangeText={setSearchTerm}
+            placeholder="Search name, email..."
+            style={{ marginBottom: 0, backgroundColor: '#fff' }}
+          />
+        </View>
+        <Button
+          title={showOnlineOnly ? "Online Only" : "All Users"}
+          variant={showOnlineOnly ? "primary" : "outline"}
+          onPress={() => setShowOnlineOnly(!showOnlineOnly)}
+        />
+      </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 24 }}>
         <View style={styles.statsContainer}>

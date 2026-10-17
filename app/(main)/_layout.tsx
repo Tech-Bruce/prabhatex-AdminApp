@@ -6,6 +6,7 @@ import CustomTabBar from '../../src/components/CustomTabBar';
 export default function MainLayout() {
   return (
     <Tabs
+      backBehavior="history"
       tabBar={(props: any) => <CustomTabBar {...props} />}
       screenOptions={{
         headerShown: false,

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { View, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, Alert, TextInput } from 'react-native';
+import { View, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, Alert, TextInput, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Typography } from '../../src/components/Typography';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -7,6 +7,7 @@ import { api } from '../../src/api/api';
 import { colors } from '../../src/theme/colors';
 import { router } from 'expo-router';
 import { orderGalleryStore } from '../../src/utils/orderGalleryStore';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 
 const formatOrderId = (id: any) => {
   if (!id) return 'PT0100';
@@ -78,6 +79,25 @@ export default function OrdersScreen() {
   
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
   const [isSavingAwbs, setIsSavingAwbs] = useState(false);
+
+  const [permission, requestPermission] = useCameraPermissions();
+  const [isScanning, setIsScanning] = useState(false);
+
+  const handleScanPress = async () => {
+    if (!permission?.granted) {
+      const req = await requestPermission();
+      if (!req.granted) {
+        Alert.alert('Permission required', 'Camera permission is required to scan barcodes.');
+        return;
+      }
+    }
+    setIsScanning(true);
+  };
+
+  const handleBarcodeScanned = ({ data }: { data: string }) => {
+    setSearchQuery(data);
+    setIsScanning(false);
+  };
 
   const fetchOrders = async () => {
     try {
@@ -255,8 +275,13 @@ export default function OrdersScreen() {
           <View style={styles.infoCol}>
             <Typography variant="caption" color={colors.text} style={styles.label} weight="bold">AMOUNT</Typography>
             <Typography variant="body" color={colors.text} weight="bold" style={{ fontSize: 16 }}>₹{Number(item.totalAmount).toLocaleString('en-IN')}</Typography>
-            <View style={[styles.badge, isCOD ? styles.badgeOrange : styles.badgeGreen]}>
-              <Typography variant="caption" color={isCOD ? '#b45309' : '#047857'} style={{ fontSize: 10, fontWeight: 'bold' }}>{isCOD ? 'COD' : 'PREPAID'}</Typography>
+            <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
+              <View style={[styles.badge, isCOD ? styles.badgeOrange : styles.badgeGreen]}>
+                <Typography variant="caption" color={isCOD ? '#b45309' : '#047857'} style={{ fontSize: 10, fontWeight: 'bold' }}>{isCOD ? 'COD' : 'PREPAID'}</Typography>
+              </View>
+              <View style={[styles.badge, (item.status === 'shipped' || item.status === 'delivered') ? styles.badgeGreen : styles.badgeYellow]}>
+                <Typography variant="caption" color={(item.status === 'shipped' || item.status === 'delivered') ? '#047857' : '#854d0e'} style={{ fontSize: 10, fontWeight: 'bold' }}>{(item.status === 'shipped' || item.status === 'delivered') ? 'FULFILLED' : 'UNFULFILLED'}</Typography>
+              </View>
             </View>
           </View>
           
@@ -305,7 +330,11 @@ export default function OrdersScreen() {
             <TouchableOpacity onPress={() => setSearchQuery('')}>
               <MaterialCommunityIcons name="close-circle" size={18} color={colors.textSecondary} />
             </TouchableOpacity>
-          ) : null}
+          ) : (
+            <TouchableOpacity onPress={handleScanPress} style={{ padding: 4 }}>
+              <MaterialCommunityIcons name="camera-outline" size={20} color={colors.primary} />
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
@@ -391,6 +420,36 @@ export default function OrdersScreen() {
           }
         />
       )}
+
+      {/* Camera Scanner Modal */}
+      <Modal visible={isScanning} animationType="slide" transparent={false}>
+        <View style={{ flex: 1, backgroundColor: '#000' }}>
+          <SafeAreaView style={{ flex: 1 }}>
+            <View style={{ padding: 16, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Typography variant="h2" color="#fff">Scan Barcode</Typography>
+              <TouchableOpacity onPress={() => setIsScanning(false)} style={{ padding: 8 }}>
+                <MaterialCommunityIcons name="close" size={28} color="#fff" />
+              </TouchableOpacity>
+            </View>
+            <View style={{ flex: 1, overflow: 'hidden', borderRadius: 24, margin: 16 }}>
+              {isScanning && (
+                <CameraView
+                  style={{ flex: 1 }}
+                  facing="back"
+                  barcodeScannerSettings={{
+                    barcodeTypes: ['qr', 'code128', 'code39', 'code93', 'ean13', 'ean8', 'upc_a', 'upc_e'],
+                  }}
+                  onBarcodeScanned={handleBarcodeScanned}
+                />
+              )}
+            </View>
+            <Typography variant="body" color="#ccc" style={{ textAlign: 'center', marginBottom: 32 }}>
+              Position the barcode within the frame
+            </Typography>
+          </SafeAreaView>
+        </View>
+      </Modal>
+
     </SafeAreaView>
   );
 }
@@ -549,6 +608,7 @@ const styles = StyleSheet.create({
   },
   badgeGreen: { backgroundColor: '#d1fae5' },
   badgeOrange: { backgroundColor: '#ffedd5' },
+  badgeYellow: { backgroundColor: '#fef08a' },
   awbBanner: {
     marginTop: 12,
     backgroundColor: '#eff6ff',
