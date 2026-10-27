@@ -40,7 +40,8 @@ export default function CustomTabBar({ state, descriptors, navigation }: BottomT
   // Active index mapped to the filtered routes
   const activeRoute = state.routes[state.index];
   const activeIndex = visibleRoutes.findIndex(r => r.key === activeRoute.key);
-  const safeActiveIndex = activeIndex >= 0 ? activeIndex : 0;
+  // When on secondary sub-screens (like users, categories, banners, etc.), highlight 'more' (index 2)
+  const safeActiveIndex = activeIndex >= 0 ? activeIndex : 2;
 
   useEffect(() => {
     Animated.spring(slideAnim, {
@@ -117,10 +118,11 @@ export default function CustomTabBar({ state, descriptors, navigation }: BottomT
       </Animated.View>
 
       {/* 3. Icons and Labels */}
-      <View style={[styles.tabContent, { paddingBottom: insets.bottom }]}>
+      <View style={[styles.tabContent, { height: BAR_HEIGHT }]}>
         {visibleRoutes.map((route, index) => {
           const { options } = descriptors[route.key];
           const label = options.title !== undefined ? options.title : route.name;
+          const isDirectlyActive = activeRoute.name === route.name;
           const isFocused = safeActiveIndex === index;
 
           const onPress = () => {
@@ -130,7 +132,7 @@ export default function CustomTabBar({ state, descriptors, navigation }: BottomT
               canPreventDefault: true,
             });
 
-            if (!isFocused && !event.defaultPrevented) {
+            if (!isDirectlyActive && !event.defaultPrevented) {
               navigation.navigate(route.name);
             }
           };

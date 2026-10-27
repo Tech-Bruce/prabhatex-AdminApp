@@ -9,15 +9,22 @@ export interface User {
   role: string;
 }
 
+export interface AuthResponse {
+  success: boolean;
+  message: string;
+  user: User;
+  token?: string;
+}
+
 export const authApi = {
   login: async (data: { email?: string; phoneNumber?: string; password: string }) => {
     const response = await api.post('/login', data);
-    return response.data as { success: boolean; message: string; user: User };
+    return response.data as AuthResponse;
   },
   
   register: async (data: any) => {
     const response = await api.post('/register', data);
-    return response.data as { success: boolean; message: string; user: User };
+    return response.data as AuthResponse;
   },
 
   logout: async () => {

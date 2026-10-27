@@ -1,6 +1,7 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
 import { User, authApi } from '../api/auth';
-import { api } from '../api/api';
+import { tokenStore } from '../api/tokenStore';
+import { setUnauthorizedCallback } from '../api/api';
 
 interface AuthState {
   user: User | null;
@@ -15,20 +16,36 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
-    checkAuth();
+  const handleUnauthorized = useCallback(async () => {
+    await tokenStore.clear();
+    setUser(null);
   }, []);
+
+  useEffect(() => {
+    setUnauthorizedCallback(handleUnauthorized);
+    checkAuth();
+    return () => {
+      setUnauthorizedCallback(null);
+    };
+  }, [handleUnauthorized]);
 
   const checkAuth = async () => {
     try {
-      const { user } = await authApi.getProfile();
-      if (user.role === 'admin') {
-        setUser(user);
+      const token = await tokenStore.hydrate();
+      if (!token) {
+        setUser(null);
+        return;
+      }
+      const response = await authApi.getProfile();
+      if (response.user && response.user.role === 'admin') {
+        setUser(response.user);
       } else {
-        await authApi.logout();
+        await authApi.logout().catch(() => {});
+        await tokenStore.clear();
         setUser(null);
       }
     } catch (error) {
+      await tokenStore.clear();
       setUser(null);
     } finally {
       setIsLoading(false);
@@ -38,8 +55,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const login = async (data: { email?: string; phoneNumber?: string; password: string }) => {
     const response = await authApi.login(data);
     if (response.user.role !== 'admin') {
-      await authApi.logout();
+      await authApi.logout().catch(() => {});
       throw new Error('Access denied. Admin privileges required.');
+    }
+    if (response.token) {
+      await tokenStore.save(response.token);
     }
     setUser(response.user);
   };
@@ -50,6 +70,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     } catch (e) {
       console.error('Logout error', e);
     } finally {
+      await tokenStore.clear();
       setUser(null);
     }
   };

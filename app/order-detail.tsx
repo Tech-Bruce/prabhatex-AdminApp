@@ -34,10 +34,10 @@ const capitalizeName = (name: string) => {
 const getCourierTrackingUrl = (awbNo: string, courierPartner: string) => {
   const partner = (courierPartner || '').toLowerCase();
   if (partner.includes('dtdc')) return `https://www.dtdc.in/trace.asp?strCnno=${awbNo}`;
-  if (partner.includes('professional')) return 'https://www.tpcglobe.com/';
+  if (partner.includes('professional')) return `https://tpcglobe.com/track-info.aspx?id=${awbNo}`;
   if (partner.includes('india post') || partner.includes('indian post'))
     return `https://www.indiapost.gov.in/vas/pages/trackConsignment.aspx`;
-  return `https://www.stcourier.com/tracking?awb=${awbNo}`;
+  return 'https://www.stcourier.com/';
 };
 
 // ── Status Pill ──

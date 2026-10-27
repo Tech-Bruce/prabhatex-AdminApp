@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { tokenStore } from './tokenStore';
 
 // ==========================================
 // ==========================================
@@ -14,17 +15,51 @@ const BASE_URL = 'https://api.prabhatex.in/api/v1'; // Update this manually!
 
 export const api = axios.create({
   baseURL: BASE_URL,
+  timeout: 15000,
   withCredentials: true, // Important for cookies
+  headers: {
+    'x-client-app': 'admin',
+    'Accept': 'application/json',
+  },
 });
+
+// Request interceptor: attach x-client-app and Bearer token reliably
+api.interceptors.request.use(async (config) => {
+  config.headers = config.headers || {};
+  config.headers['x-client-app'] = 'admin';
+
+  let token = tokenStore.get();
+  if (!token) {
+    try {
+      token = await tokenStore.hydrate();
+    } catch {
+      // ignore
+    }
+  }
+
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+type UnauthorizedCallback = () => void;
+let onUnauthorized: UnauthorizedCallback | null = null;
+
+export const setUnauthorizedCallback = (callback: UnauthorizedCallback | null) => {
+  onUnauthorized = callback;
+};
 
 // Interceptor for error handling
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    // We can handle global 401s here to trigger a logout
     if (error.response && error.response.status === 401) {
-      // Dispatch event or call a callback to clear auth state
+      if (onUnauthorized) {
+        onUnauthorized();
+      }
     }
     return Promise.reject(error);
   }
 );
+

@@ -42,6 +42,13 @@ export default function MainLayout() {
       
       {/* Hidden Screens from Tab Bar */}
       <Tabs.Screen
+        name="order-groups"
+        options={{
+          href: null,
+          headerShown: false,
+        }}
+      />
+      <Tabs.Screen
         name="banners"
         options={{
           href: null,
@@ -106,6 +113,13 @@ export default function MainLayout() {
       />
       <Tabs.Screen
         name="live-view"
+        options={{
+          href: null,
+          headerShown: false,
+        }}
+      />
+      <Tabs.Screen
+        name="collections"
         options={{
           href: null,
           headerShown: false,

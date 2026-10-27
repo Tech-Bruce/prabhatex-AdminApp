@@ -10,6 +10,7 @@ import { api } from '../../src/api/api';
 import { Stack } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { AppAlert } from '../../src/context/AlertContext';
 
 interface Category {
   id: number;
@@ -43,7 +44,7 @@ export default function CategoriesScreen() {
       }
     } catch (error) {
       console.error('Error fetching categories:', error);
-      Alert.alert('Error', 'Failed to fetch categories');
+      AppAlert.alert('Error', 'Failed to fetch categories');
     } finally {
       setLoading(false);
     }
@@ -75,7 +76,7 @@ export default function CategoriesScreen() {
   };
 
   const handleDelete = (id: number) => {
-    Alert.alert(
+    AppAlert.alert(
       'Delete Category',
       'Are you sure you want to delete this category?',
       [
@@ -88,12 +89,12 @@ export default function CategoriesScreen() {
               const res = await api.delete(`/deleteCategory/${id}`);
               if (res.data.success) {
                 setCategories((prev) => prev.filter((c) => c.id !== id));
-                Alert.alert('Success', 'Category deleted successfully');
+                AppAlert.alert('Success', 'Category deleted successfully');
                 if (editingId === id) resetForm();
               }
-            } catch (error) {
+            } catch (error: any) {
               console.error(error);
-              Alert.alert('Error', 'Failed to delete category');
+              AppAlert.alert('Error', error?.response?.data?.message || 'Failed to delete category');
             }
           },
         },
@@ -103,11 +104,11 @@ export default function CategoriesScreen() {
 
   const handleSubmit = async () => {
     if (!categoryName.trim()) {
-      Alert.alert('Validation Error', 'Category name is required.');
+      AppAlert.alert('Validation Error', 'Category name is required.');
       return;
     }
     if (!editingId && !imageUri) {
-      Alert.alert('Validation Error', 'Please select an image for the new category.');
+      AppAlert.alert('Validation Error', 'Please select an image for the new category.');
       return;
     }
 
@@ -132,13 +133,13 @@ export default function CategoriesScreen() {
         : await api.post(endpoint, formData, { headers: { 'Content-Type': 'multipart/form-data' } });
 
       if (res.data.success) {
-        Alert.alert('Success', isUpdate ? 'Category updated!' : 'Category created!');
+        AppAlert.alert('Success', isUpdate ? 'Category updated!' : 'Category created!');
         resetForm();
         fetchCategories(); // Reload the list
       }
     } catch (error: any) {
       console.error(error);
-      Alert.alert('Error', error.response?.data?.message || 'Failed to save category');
+      AppAlert.alert('Error', error.response?.data?.message || 'Failed to save category');
     } finally {
       setSubmitting(false);
     }

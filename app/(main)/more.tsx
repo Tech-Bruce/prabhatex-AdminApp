@@ -10,13 +10,18 @@ import { colors } from '../../src/theme/colors';
 export default function MoreScreen() {
   const { logout } = useAuth();
 
-  const menuItems = [
+  const catalogMenuItems = [
+    { title: 'Order Groups History', icon: 'layers-outline', onPress: () => router.push('/order-groups') },
     { title: 'Live View', icon: 'access-point', onPress: () => router.push('/live-view') },
     { title: 'Manage Banners', icon: 'image-multiple', onPress: () => router.push('/banners') },
     { title: 'Categories', icon: 'shape-outline', onPress: () => router.push('/categories') },
+    { title: 'Collections', icon: 'view-grid-plus-outline', onPress: () => router.push('/collections') },
     { title: 'Upload Labels', icon: 'cloud-upload-outline', onPress: () => router.push('/upload-labels') },
     { title: 'Product Inventory', icon: 'tag-multiple', onPress: () => router.push('/products') },
     { title: 'Upload Product', icon: 'cloud-upload', onPress: () => router.push('/product-editor') },
+  ];
+
+  const settingsMenuItems = [
     { title: 'Users', icon: 'account-group', onPress: () => router.push('/users') },
     { title: 'Delivery Charges', icon: 'truck-delivery-outline', onPress: () => router.push('/delivery-charges') },
     { title: 'Product Reviews', icon: 'star-outline', onPress: () => router.push('/reviews') },
@@ -51,8 +56,8 @@ export default function MoreScreen() {
         <View style={styles.menuGroup}>
           <Typography variant="caption" color="#8c7a7a" style={styles.groupTitle}>OVERVIEW & CATALOG</Typography>
           <View style={styles.menuContainer}>
-            {menuItems.slice(0, 6).map((item, index) => (
-              <TouchableOpacity key={index} style={[styles.menuItem, index === 5 && styles.lastMenuItem]} activeOpacity={0.7} onPress={item.onPress}>
+            {catalogMenuItems.map((item, index) => (
+              <TouchableOpacity key={index} style={[styles.menuItem, index === catalogMenuItems.length - 1 && styles.lastMenuItem]} activeOpacity={0.7} onPress={item.onPress}>
                 <View style={styles.menuItemLeft}>
                   <View style={styles.iconWrapper}>
                     <MaterialCommunityIcons name={item.icon as any} size={22} color={colors.secondary} />
@@ -68,8 +73,8 @@ export default function MoreScreen() {
         <View style={styles.menuGroup}>
           <Typography variant="caption" color="#8c7a7a" style={styles.groupTitle}>CUSTOMERS & SETTINGS</Typography>
           <View style={styles.menuContainer}>
-            {menuItems.slice(6).map((item, index) => (
-              <TouchableOpacity key={index} style={[styles.menuItem, index === menuItems.slice(6).length - 1 && styles.lastMenuItem]} activeOpacity={0.7} onPress={item.onPress}>
+            {settingsMenuItems.map((item, index) => (
+              <TouchableOpacity key={index} style={[styles.menuItem, index === settingsMenuItems.length - 1 && styles.lastMenuItem]} activeOpacity={0.7} onPress={item.onPress}>
                 <View style={styles.menuItemLeft}>
                   <View style={styles.iconWrapper}>
                     <MaterialCommunityIcons name={item.icon as any} size={22} color={colors.secondary} />

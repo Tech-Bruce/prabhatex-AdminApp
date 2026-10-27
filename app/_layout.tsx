@@ -40,10 +40,14 @@ const RootLayoutNav = () => {
   );
 };
 
+import { AlertProvider } from '../src/context/AlertContext';
+
 export default function RootLayout() {
   return (
     <AuthProvider>
-      <RootLayoutNav />
+      <AlertProvider>
+        <RootLayoutNav />
+      </AlertProvider>
     </AuthProvider>
   );
 }
