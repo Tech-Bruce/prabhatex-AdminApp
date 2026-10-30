@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { View, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, Alert, TextInput, Modal, Image } from 'react-native';
+import { View, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator, Alert, TextInput, Modal, Image, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Typography } from '../../src/components/Typography';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -139,20 +139,36 @@ const isInsideTamilNadu = (state: any) => {
   );
 };
 
+export const isOrderFulfilled = (o: any) => {
+  if (!o) return false;
+  const s = String(o.status || '').toLowerCase().trim();
+  return s === 'shipped' || s === 'delivered';
+};
+
 const STATUS_TAB_MAP: any = {
-  Unlabeled: (o: any) => {
+  Unlabeled: (o: any, fulfillment?: string) => {
     const s = String(o.status || '').toLowerCase().trim();
-    if (s === 'delivered' || s === 'cancelled') return false;
+    if (s === 'cancelled') return false;
+    if (!isInsideTamilNadu(o.shippingAddress?.state)) return false;
+    if (fulfillment === 'Fulfilled') {
+      return isOrderFulfilled(o);
+    }
+    if (s === 'delivered') return false;
     if (o.awbNo || o.courierMeta?.externalLabelGenerated) return false;
-    return isInsideTamilNadu(o.shippingAddress?.state);
+    return true;
   },
-  'Out of TN': (o: any) => {
+  'Out of TN': (o: any, fulfillment?: string) => {
     const s = String(o.status || '').toLowerCase().trim();
-    if (s === 'delivered' || s === 'cancelled') return false;
-    if (o.awbNo || o.courierMeta?.externalLabelGenerated) return false;
+    if (s === 'cancelled') return false;
     const state = o.shippingAddress?.state;
-    if (!state || !String(state).trim()) return true;
-    return !isInsideTamilNadu(state);
+    const isOut = !state || !String(state).trim() || !isInsideTamilNadu(state);
+    if (!isOut) return false;
+    if (fulfillment === 'Fulfilled') {
+      return isOrderFulfilled(o);
+    }
+    if (s === 'delivered') return false;
+    if (o.awbNo || o.courierMeta?.externalLabelGenerated) return false;
+    return true;
   },
   'All Orders': () => true,
   Pending: (o: any) => {
@@ -178,6 +194,28 @@ const STATUS_TAB_MAP: any = {
 
 const TABS = Object.keys(STATUS_TAB_MAP);
 const FULFILLMENT_TABS = ['All', 'Fulfilled', 'Unfulfilled'];
+const COURIER_FILTER_OPTIONS = ['All', 'ST Courier', 'Professional Courier', 'DTDC', 'India Post', 'Unassigned'];
+
+const matchesCourier = (order: any, filter: string) => {
+  if (!filter || filter === 'All') return true;
+  const partner = String(order.courierPartner || '').trim().toLowerCase();
+  if (filter === 'Unassigned') {
+    return !partner;
+  }
+  if (filter === 'ST Courier') {
+    return partner.includes('st courier') || partner.includes('stcourier');
+  }
+  if (filter === 'Professional Courier') {
+    return partner.includes('professional');
+  }
+  if (filter === 'DTDC') {
+    return partner.includes('dtdc');
+  }
+  if (filter === 'India Post') {
+    return partner.includes('india post') || partner.includes('indian post') || partner.includes('indiapost');
+  }
+  return partner.includes(filter.toLowerCase());
+};
 
 export default function OrdersScreen() {
   const [orders, setOrders] = useState<any[]>([]);
@@ -185,13 +223,14 @@ export default function OrdersScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState('Unlabeled');
   const [fulfillmentFilter, setFulfillmentFilter] = useState('All');
+  const [courierFilter, setCourierFilter] = useState('All');
   const [searchQuery, setSearchQuery] = useState('');
+  const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
   
   // Date filter state
   const [datePreset, setDatePreset] = useState('all');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-  const [customModalVisible, setCustomModalVisible] = useState(false);
   const [tempStartDate, setTempStartDate] = useState('');
   const [tempEndDate, setTempEndDate] = useState('');
 
@@ -224,6 +263,8 @@ export default function OrdersScreen() {
     if (preset === 'all') {
       setStartDate('');
       setEndDate('');
+      setTempStartDate('');
+      setTempEndDate('');
     } else if (preset === 'today') {
       const todayStr = formatDateVal(now);
       setStartDate(todayStr);
@@ -244,22 +285,44 @@ export default function OrdersScreen() {
       setStartDate(formatDateVal(startOfMonth));
       setEndDate(formatDateVal(now));
     } else if (preset === 'custom') {
-      setTempStartDate(startDate || formatDateVal(now));
-      setTempEndDate(endDate || formatDateVal(now));
-      setCustomModalVisible(true);
+      const s = startDate || formatDateVal(now);
+      const e = endDate || formatDateVal(now);
+      setTempStartDate(s);
+      setTempEndDate(e);
+      setStartDate(s);
+      setEndDate(e);
     }
   };
 
-  const handleApplyCustomDate = () => {
-    if (!tempStartDate && !tempEndDate) {
-      applyDatePreset('all');
-      setCustomModalVisible(false);
-      return;
+  const activeFilterCount = useMemo(() => {
+    let count = 0;
+    if (activeTab !== 'Unlabeled') count++;
+    if (fulfillmentFilter !== 'All') count++;
+    if (courierFilter !== 'All') count++;
+    if (datePreset !== 'all') count++;
+    return count;
+  }, [activeTab, fulfillmentFilter, courierFilter, datePreset]);
+
+  const handleResetAllFilters = () => {
+    setActiveTab('Unlabeled');
+    setFulfillmentFilter('All');
+    setCourierFilter('All');
+    setDatePreset('all');
+    setStartDate('');
+    setEndDate('');
+    setTempStartDate('');
+    setTempEndDate('');
+  };
+
+  const getDatePresetLabel = () => {
+    if (datePreset === 'today') return 'Today';
+    if (datePreset === 'yesterday') return 'Yesterday';
+    if (datePreset === 'week') return 'Past 7 Days';
+    if (datePreset === 'thisMonth') return 'This Month';
+    if (datePreset === 'custom') {
+      return startDate ? `${startDate}${endDate && endDate !== startDate ? ` to ${endDate}` : ''}` : 'Custom Date';
     }
-    setStartDate(tempStartDate);
-    setEndDate(tempEndDate || tempStartDate);
-    setDatePreset('custom');
-    setCustomModalVisible(false);
+    return '';
   };
 
   const fetchOrders = async () => {
@@ -293,20 +356,24 @@ export default function OrdersScreen() {
     return counts;
   }, [orders, startDate, endDate]);
 
+  useEffect(() => {
+    setSelectedOrders([]);
+  }, [activeTab, fulfillmentFilter]);
+
   const filteredOrders = useMemo(() => {
     const rawQuery = searchQuery.trim();
     const matchesDate = (o: any) => isOrderInDateRange(o.createdAt, startDate, endDate);
-    const matchTab = (o: any) => (STATUS_TAB_MAP[activeTab] || (() => true))(o);
+    const matchTab = (o: any) => (STATUS_TAB_MAP[activeTab] || (() => true))(o, fulfillmentFilter);
     const matchFulfillment = (o: any) => {
       if (fulfillmentFilter === 'All') return true;
-      const s = String(o.status || '').toLowerCase().trim();
-      const isFulfilled = s === 'shipped' || s === 'delivered';
+      const isFulfilled = isOrderFulfilled(o);
       return fulfillmentFilter === 'Fulfilled' ? isFulfilled : !isFulfilled;
     };
+    const matchCourier = (o: any) => matchesCourier(o, courierFilter);
 
     if (!rawQuery) {
       return orders
-        .filter(o => matchTab(o) && matchFulfillment(o) && matchesDate(o))
+        .filter(o => matchTab(o) && matchFulfillment(o) && matchCourier(o) && matchesDate(o))
         .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
     }
 
@@ -321,6 +388,7 @@ export default function OrdersScreen() {
     for (const o of orders) {
       if (!matchTab(o)) continue;
       if (!matchFulfillment(o)) continue;
+      if (!matchCourier(o)) continue;
       if (!matchesDate(o)) continue;
 
       let score = 0;
@@ -462,7 +530,7 @@ export default function OrdersScreen() {
     });
 
     return scored.map(item => item.order);
-  }, [orders, activeTab, fulfillmentFilter, searchQuery, startDate, endDate]);
+  }, [orders, activeTab, fulfillmentFilter, courierFilter, searchQuery, startDate, endDate]);
 
   // ── Sales Summary for the currently visible / filtered orders ───────────
   const ordersSummary = useMemo(() => {
@@ -600,7 +668,7 @@ export default function OrdersScreen() {
   const renderOrder = ({ item }: { item: any }) => {
     const isCOD = String(item.paymentMethod || '').toLowerCase().trim() === 'cod';
     const statusLower = String(item.status || '').toLowerCase().trim();
-    const isFulfilled = statusLower === 'shipped' || statusLower === 'delivered';
+    const isFulfilled = isOrderFulfilled(item);
     const cfg = STATUS_CONFIG[statusLower as keyof typeof STATUS_CONFIG] || STATUS_CONFIG.pending;
     const addr = item.shippingAddress || {};
     const isSelected = selectedOrders.includes(item.id);
@@ -835,8 +903,8 @@ export default function OrdersScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* ── Search Bar (Order ID, Customer Name, Phone, Product, AWB) ── */}
-      <View style={styles.searchContainer}>
+      {/* ── Search Bar & Filter Button ── */}
+      <View style={styles.searchRow}>
         <View style={styles.searchBox}>
           <MaterialCommunityIcons name="magnify" size={20} color={colors.textSecondary} />
           <TextInput
@@ -856,161 +924,84 @@ export default function OrdersScreen() {
             </TouchableOpacity>
           )}
         </View>
+
+        {/* Filter Trigger Button */}
+        <TouchableOpacity
+          style={[styles.filterTriggerBtn, activeFilterCount > 0 && styles.filterTriggerBtnActive]}
+          onPress={() => setIsFilterModalVisible(true)}
+          activeOpacity={0.8}
+        >
+          <MaterialCommunityIcons
+            name="tune-variant"
+            size={20}
+            color={activeFilterCount > 0 ? '#ffffff' : colors.text}
+          />
+          {activeFilterCount > 0 && (
+            <View style={styles.filterBadge}>
+              <Typography variant="caption" weight="extrabold" color="#ffffff" style={{ fontSize: 9 }}>
+                {activeFilterCount}
+              </Typography>
+            </View>
+          )}
+        </TouchableOpacity>
       </View>
 
-      {/* ── Fulfillment Segmented Control ── */}
-      <View style={styles.segmentedControl}>
-        {FULFILLMENT_TABS.map(tab => (
-          <TouchableOpacity 
-            key={tab} 
-            style={[styles.segmentBtn, fulfillmentFilter === tab && styles.segmentBtnActive]}
-            onPress={() => setFulfillmentFilter(tab)}
-          >
-            <Typography variant="caption" weight="bold" color={fulfillmentFilter === tab ? colors.text : colors.textSecondary}>
-              {tab}
-            </Typography>
-          </TouchableOpacity>
-        ))}
-      </View>
+      {/* ── Active Filters Chips Bar ── */}
+      {activeFilterCount > 0 && (
+        <View style={styles.activeFiltersBar}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.activeFiltersContent}>
+            {activeTab !== 'Unlabeled' && (
+              <View style={styles.activeFilterPill}>
+                <Typography variant="caption" weight="bold" color="#1e40af" style={{ fontSize: 11 }}>
+                  Scope: {activeTab}
+                </Typography>
+                <TouchableOpacity onPress={() => setActiveTab('Unlabeled')} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+                  <MaterialCommunityIcons name="close" size={13} color="#1e40af" />
+                </TouchableOpacity>
+              </View>
+            )}
 
-      {/* ── Date Presets Filter Bar ── */}
-      <View style={styles.dateFilterContainer}>
-        <FlatList
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          data={DATE_PRESETS}
-          keyExtractor={item => item.id}
-          contentContainerStyle={{ paddingHorizontal: 16 }}
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              style={[styles.dateChip, datePreset === item.id && styles.dateChipActive]}
-              onPress={() => applyDatePreset(item.id)}
-            >
-              <MaterialCommunityIcons 
-                name={item.id === 'custom' ? 'calendar-range' : 'calendar-outline'} 
-                size={13} 
-                color={datePreset === item.id ? '#ffffff' : '#64748b'} 
-                style={{ marginRight: 4 }}
-              />
-              <Typography
-                variant="caption"
-                weight="bold"
-                color={datePreset === item.id ? '#ffffff' : '#64748b'}
-                style={{ fontSize: 12 }}
-              >
-                {item.label}
+            {fulfillmentFilter !== 'All' && (
+              <View style={styles.activeFilterPill}>
+                <Typography variant="caption" weight="bold" color="#1e40af" style={{ fontSize: 11 }}>
+                  Fulfillment: {fulfillmentFilter}
+                </Typography>
+                <TouchableOpacity onPress={() => setFulfillmentFilter('All')} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+                  <MaterialCommunityIcons name="close" size={13} color="#1e40af" />
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {courierFilter !== 'All' && (
+              <View style={styles.activeFilterPill}>
+                <Typography variant="caption" weight="bold" color="#1e40af" style={{ fontSize: 11 }}>
+                  Courier: {courierFilter}
+                </Typography>
+                <TouchableOpacity onPress={() => setCourierFilter('All')} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+                  <MaterialCommunityIcons name="close" size={13} color="#1e40af" />
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {datePreset !== 'all' && (
+              <View style={styles.activeFilterPill}>
+                <Typography variant="caption" weight="bold" color="#1e40af" style={{ fontSize: 11 }}>
+                  Date: {getDatePresetLabel()}
+                </Typography>
+                <TouchableOpacity onPress={() => applyDatePreset('all')} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+                  <MaterialCommunityIcons name="close" size={13} color="#1e40af" />
+                </TouchableOpacity>
+              </View>
+            )}
+
+            <TouchableOpacity style={styles.clearAllFiltersBtn} onPress={handleResetAllFilters}>
+              <Typography variant="caption" weight="extrabold" color="#dc2626" style={{ fontSize: 11 }}>
+                Clear All ✕
               </Typography>
             </TouchableOpacity>
-          )}
-        />
-      </View>
-
-      {/* ── Active Date Filter Banner (when filter applied) ── */}
-      {datePreset !== 'all' && (
-        <View style={styles.activeDateBanner}>
-          <View style={styles.activeDateLeft}>
-            <MaterialCommunityIcons name="calendar-check" size={15} color="#1e40af" style={{ marginRight: 6 }} />
-            <Typography variant="caption" weight="bold" color="#1e40af" numberOfLines={1} style={{ flex: 1, fontSize: 12 }}>
-              {datePreset === 'today' ? 'Filter: Today' :
-               datePreset === 'yesterday' ? 'Filter: Yesterday' :
-               datePreset === 'week' ? 'Filter: Past 7 Days' :
-               datePreset === 'thisMonth' ? 'Filter: This Month' :
-               `Filter: ${startDate} to ${endDate}`}
-            </Typography>
-          </View>
-          <TouchableOpacity onPress={() => applyDatePreset('all')} style={styles.clearDateBtn}>
-            <Typography variant="caption" weight="extrabold" color="#dc2626" style={{ fontSize: 11 }}>
-              Clear ✕
-            </Typography>
-          </TouchableOpacity>
+          </ScrollView>
         </View>
       )}
-
-      {/* ── Sales Overview & Analytics Shortcut Card ── */}
-      <View style={styles.salesOverviewCard}>
-        <View style={styles.salesOverviewHeader}>
-          <TouchableOpacity 
-            style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
-            onPress={() => setShowSalesOverview(!showSalesOverview)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.salesOverviewIconCircle}>
-              <MaterialCommunityIcons name="finance" size={16} color="#4f46e5" />
-            </View>
-            <View style={{ marginLeft: 8, flex: 1 }}>
-              <Typography variant="caption" weight="extrabold" color="#1e293b" style={{ fontSize: 12 }}>
-                {datePreset === 'all' ? 'All-Time Overall Sales' : 'Filtered Period Sales'}
-              </Typography>
-              <Typography variant="caption" color="#64748b" style={{ fontSize: 11 }}>
-                {ordersSummary.ordersCount} orders • ₹{ordersSummary.totalSales.toLocaleString('en-IN')} total
-              </Typography>
-            </View>
-            <MaterialCommunityIcons 
-              name={showSalesOverview ? "chevron-up" : "chevron-down"} 
-              size={18} 
-              color="#64748b" 
-              style={{ marginLeft: 6, marginRight: 8 }} 
-            />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.openGraphShortcutBtn}
-            onPress={() => router.push('/live-view')}
-            activeOpacity={0.8}
-          >
-            <MaterialCommunityIcons name="chart-bell-curve" size={13} color="#ffffff" style={{ marginRight: 4 }} />
-            <Typography variant="caption" weight="extrabold" color="#ffffff" style={{ fontSize: 11 }}>
-              Live Graph ↗
-            </Typography>
-          </TouchableOpacity>
-        </View>
-
-        {showSalesOverview && (
-          <View style={styles.salesOverviewStatsRow}>
-            <View style={styles.salesMiniStatCol}>
-              <Typography variant="caption" color="#64748b" style={{ fontSize: 10 }}>TOTAL SALES</Typography>
-              <Typography variant="body" weight="extrabold" color="#0f172a" style={{ fontSize: 14, marginTop: 2 }}>
-                ₹{ordersSummary.totalSales.toLocaleString('en-IN')}
-              </Typography>
-            </View>
-            <View style={styles.salesMiniStatDivider} />
-            <View style={styles.salesMiniStatCol}>
-              <Typography variant="caption" color="#64748b" style={{ fontSize: 10 }}>AVG ORDER (AOV)</Typography>
-              <Typography variant="body" weight="extrabold" color="#2563eb" style={{ fontSize: 14, marginTop: 2 }}>
-                ₹{ordersSummary.aov.toLocaleString('en-IN')}
-              </Typography>
-            </View>
-            <View style={styles.salesMiniStatDivider} />
-            <View style={styles.salesMiniStatCol}>
-              <Typography variant="caption" color="#64748b" style={{ fontSize: 10 }}>COD / PREPAID</Typography>
-              <Typography variant="body" weight="extrabold" color="#059669" style={{ fontSize: 14, marginTop: 2 }}>
-                {ordersSummary.codCount} / {ordersSummary.prepaidCount}
-              </Typography>
-            </View>
-          </View>
-        )}
-      </View>
-
-      {/* ── Status Tabs with Live Counts (matching web admin) ── */}
-      <View style={styles.tabsContainer}>
-        <FlatList
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          data={TABS}
-          keyExtractor={item => item}
-          contentContainerStyle={{ paddingHorizontal: 16 }}
-          renderItem={({ item }) => (
-            <TouchableOpacity 
-              style={[styles.tab, activeTab === item && styles.activeTab]}
-              onPress={() => setActiveTab(item)}
-            >
-              <Typography variant="caption" weight="bold" color={activeTab === item ? '#ffffff' : colors.textSecondary}>
-                {item} ({tabCounts[item] ?? 0})
-              </Typography>
-            </TouchableOpacity>
-          )}
-        />
-      </View>
 
       {/* Select All & Create Label Bar */}
       {filteredOrders.length > 0 && !loading && (
@@ -1090,81 +1081,255 @@ export default function OrdersScreen() {
         </View>
       </Modal>
 
-      {/* ── Custom Date Range Modal ── */}
-      <Modal visible={customModalVisible} animationType="fade" transparent={true}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                <MaterialCommunityIcons name="calendar-range" size={22} color={colors.primary} style={{ marginRight: 8 }} />
-                <Typography variant="h3" color={colors.text} weight="bold">Select Date Range</Typography>
+      {/* ── Comprehensive Filter Modal ── */}
+      <Modal
+        visible={isFilterModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => setIsFilterModalVisible(false)}
+      >
+        <View style={styles.filterModalOverlay}>
+          <View style={styles.filterModalContent}>
+            {/* Header */}
+            <View style={styles.filterModalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <MaterialCommunityIcons name="tune-variant" size={22} color={colors.text} />
+                <Typography variant="h3" weight="extrabold" color={colors.text}>Filter Orders</Typography>
+                {activeFilterCount > 0 && (
+                  <View style={styles.modalActiveBadge}>
+                    <Typography variant="caption" weight="bold" color="#ffffff" style={{ fontSize: 10 }}>
+                      {activeFilterCount} active
+                    </Typography>
+                  </View>
+                )}
               </View>
-              <TouchableOpacity onPress={() => setCustomModalVisible(false)} style={{ padding: 4 }}>
-                <MaterialCommunityIcons name="close" size={22} color={colors.textSecondary} />
+              <TouchableOpacity onPress={() => setIsFilterModalVisible(false)} style={styles.modalCloseBtn}>
+                <MaterialCommunityIcons name="close" size={20} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
 
-            <Typography variant="caption" color={colors.textSecondary} style={{ marginBottom: 16 }}>
-              Enter start and end date (YYYY-MM-DD) to filter orders
-            </Typography>
-
-            <View style={styles.dateInputGroup}>
-              <Typography variant="caption" weight="bold" color={colors.text} style={styles.dateInputLabel}>
-                START DATE
-              </Typography>
-              <View style={styles.dateInputRow}>
-                <TextInput
-                  style={styles.dateInputField}
-                  value={tempStartDate}
-                  onChangeText={setTempStartDate}
-                  placeholder="YYYY-MM-DD"
-                  placeholderTextColor="#9ca3af"
-                />
-                <TouchableOpacity
-                  style={styles.quickDateBtn}
-                  onPress={() => setTempStartDate(formatDateVal(new Date()))}
-                >
-                  <Typography variant="caption" weight="bold" color={colors.primary}>Today</Typography>
-                </TouchableOpacity>
+            <ScrollView showsVerticalScrollIndicator={false} style={styles.filterModalScroll}>
+              {/* 1. Order Scope & Status (Unlabeled, Out of TN, All Orders, etc.) */}
+              <View style={styles.filterSection}>
+                <Typography variant="body" weight="extrabold" color={colors.text} style={styles.filterSectionTitle}>
+                  Order Scope & Region
+                </Typography>
+                <View style={styles.chipGrid}>
+                  {TABS.map((tab) => {
+                    const isSelected = activeTab === tab;
+                    const count = tabCounts[tab] ?? 0;
+                    return (
+                      <TouchableOpacity
+                        key={tab}
+                        style={[styles.filterChip, isSelected && styles.filterChipActive]}
+                        onPress={() => setActiveTab(tab)}
+                      >
+                        <Typography
+                          variant="caption"
+                          weight="bold"
+                          color={isSelected ? '#ffffff' : colors.text}
+                          style={{ fontSize: 12 }}
+                        >
+                          {tab}
+                        </Typography>
+                        <View style={[styles.filterChipCountBadge, isSelected && styles.filterChipCountBadgeActive]}>
+                          <Typography
+                            variant="caption"
+                            weight="extrabold"
+                            color={isSelected ? '#ffffff' : colors.textSecondary}
+                            style={{ fontSize: 10 }}
+                          >
+                            {count}
+                          </Typography>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
               </View>
-            </View>
 
-            <View style={[styles.dateInputGroup, { marginTop: 12 }]}>
-              <Typography variant="caption" weight="bold" color={colors.text} style={styles.dateInputLabel}>
-                END DATE
-              </Typography>
-              <View style={styles.dateInputRow}>
-                <TextInput
-                  style={styles.dateInputField}
-                  value={tempEndDate}
-                  onChangeText={setTempEndDate}
-                  placeholder="YYYY-MM-DD"
-                  placeholderTextColor="#9ca3af"
-                />
-                <TouchableOpacity
-                  style={styles.quickDateBtn}
-                  onPress={() => setTempEndDate(formatDateVal(new Date()))}
-                >
-                  <Typography variant="caption" weight="bold" color={colors.primary}>Today</Typography>
-                </TouchableOpacity>
+              {/* 2. Fulfillment Status */}
+              <View style={styles.filterSection}>
+                <Typography variant="body" weight="extrabold" color={colors.text} style={styles.filterSectionTitle}>
+                  Fulfillment Status
+                </Typography>
+                <View style={styles.chipGrid}>
+                  {FULFILLMENT_TABS.map((tab) => {
+                    const isSelected = fulfillmentFilter === tab;
+                    return (
+                      <TouchableOpacity
+                        key={tab}
+                        style={[styles.filterChip, isSelected && styles.filterChipActive]}
+                        onPress={() => setFulfillmentFilter(tab)}
+                      >
+                        <Typography
+                          variant="caption"
+                          weight="bold"
+                          color={isSelected ? '#ffffff' : colors.text}
+                          style={{ fontSize: 12 }}
+                        >
+                          {tab}
+                        </Typography>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
               </View>
-            </View>
 
-            <View style={styles.modalActions}>
+              {/* 3. Courier Partner */}
+              <View style={styles.filterSection}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                  <Typography variant="body" weight="extrabold" color={colors.text} style={styles.filterSectionTitle}>
+                    Courier Partner
+                  </Typography>
+                  {courierFilter !== 'All' && (
+                    <TouchableOpacity onPress={() => setCourierFilter('All')}>
+                      <Typography variant="caption" weight="bold" color={colors.primary}>
+                        Reset
+                      </Typography>
+                    </TouchableOpacity>
+                  )}
+                </View>
+                <View style={styles.chipGrid}>
+                  {COURIER_FILTER_OPTIONS.map((opt) => {
+                    const isSelected = courierFilter === opt;
+                    return (
+                      <TouchableOpacity
+                        key={opt}
+                        style={[styles.filterChip, isSelected && styles.filterChipActive]}
+                        onPress={() => setCourierFilter(opt)}
+                      >
+                        <MaterialCommunityIcons
+                          name="truck-delivery-outline"
+                          size={13}
+                          color={isSelected ? '#ffffff' : colors.textSecondary}
+                          style={{ marginRight: 4 }}
+                        />
+                        <Typography
+                          variant="caption"
+                          weight="bold"
+                          color={isSelected ? '#ffffff' : colors.text}
+                          style={{ fontSize: 12 }}
+                        >
+                          {opt}
+                        </Typography>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+
+              {/* 4. Date Presets & Custom Date Range */}
+              <View style={styles.filterSection}>
+                <Typography variant="body" weight="extrabold" color={colors.text} style={styles.filterSectionTitle}>
+                  Date Range
+                </Typography>
+                <View style={styles.chipGrid}>
+                  {DATE_PRESETS.map((item) => {
+                    const isSelected = datePreset === item.id;
+                    return (
+                      <TouchableOpacity
+                        key={item.id}
+                        style={[styles.filterChip, isSelected && styles.filterChipActive]}
+                        onPress={() => applyDatePreset(item.id)}
+                      >
+                        <MaterialCommunityIcons
+                          name={item.id === 'custom' ? 'calendar-range' : 'calendar-outline'}
+                          size={13}
+                          color={isSelected ? '#ffffff' : colors.textSecondary}
+                          style={{ marginRight: 4 }}
+                        />
+                        <Typography
+                          variant="caption"
+                          weight="bold"
+                          color={isSelected ? '#ffffff' : colors.text}
+                          style={{ fontSize: 12 }}
+                        >
+                          {item.label}
+                        </Typography>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {/* Inline Custom Date Range Inputs when 'custom' is active */}
+                {datePreset === 'custom' && (
+                  <View style={styles.inlineCustomDateBox}>
+                    <Typography variant="caption" weight="bold" color={colors.textSecondary} style={{ marginBottom: 8 }}>
+                      Custom Date Range (YYYY-MM-DD):
+                    </Typography>
+                    <View style={styles.dateInputRowInline}>
+                      <View style={{ flex: 1, marginRight: 6 }}>
+                        <Typography variant="caption" weight="bold" color="#64748b" style={{ fontSize: 10, marginBottom: 4 }}>
+                          START DATE
+                        </Typography>
+                        <TextInput
+                          style={styles.inlineDateField}
+                          value={tempStartDate}
+                          onChangeText={(v) => {
+                            setTempStartDate(v);
+                            setStartDate(v);
+                          }}
+                          placeholder="YYYY-MM-DD"
+                          placeholderTextColor="#9ca3af"
+                        />
+                      </View>
+                      <View style={{ flex: 1, marginLeft: 6 }}>
+                        <Typography variant="caption" weight="bold" color="#64748b" style={{ fontSize: 10, marginBottom: 4 }}>
+                          END DATE
+                        </Typography>
+                        <TextInput
+                          style={styles.inlineDateField}
+                          value={tempEndDate}
+                          onChangeText={(v) => {
+                            setTempEndDate(v);
+                            setEndDate(v);
+                          }}
+                          placeholder="YYYY-MM-DD"
+                          placeholderTextColor="#9ca3af"
+                        />
+                      </View>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.quickTodayBtn}
+                      onPress={() => {
+                        const today = formatDateVal(new Date());
+                        setTempStartDate(today);
+                        setTempEndDate(today);
+                        setStartDate(today);
+                        setEndDate(today);
+                      }}
+                    >
+                      <Typography variant="caption" weight="bold" color={colors.primary}>Set to Today</Typography>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+            </ScrollView>
+
+            {/* Modal Actions */}
+            <View style={styles.filterModalFooter}>
               <TouchableOpacity
-                style={styles.modalCancelBtn}
+                style={styles.filterResetBtn}
+                onPress={handleResetAllFilters}
+                activeOpacity={0.8}
+              >
+                <Typography variant="body" weight="bold" color="#dc2626">Reset All</Typography>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.filterApplyBtn}
                 onPress={() => {
-                  applyDatePreset('all');
-                  setCustomModalVisible(false);
+                  if (datePreset === 'custom') {
+                    setStartDate(tempStartDate);
+                    setEndDate(tempEndDate || tempStartDate);
+                  }
+                  setIsFilterModalVisible(false);
                 }}
+                activeOpacity={0.8}
               >
-                <Typography variant="caption" weight="bold" color="#64748b">Clear Filter</Typography>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.modalApplyBtn}
-                onPress={handleApplyCustomDate}
-              >
-                <Typography variant="caption" weight="bold" color="#ffffff">Apply Range</Typography>
+                <Typography variant="body" weight="bold" color="#ffffff">
+                  Apply Filters ({filteredOrders.length})
+                </Typography>
               </TouchableOpacity>
             </View>
           </View>
@@ -1198,11 +1363,15 @@ const styles = StyleSheet.create({
     shadowRadius: 3,
     elevation: 2,
   },
-  searchContainer: {
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: 16,
-    marginBottom: 12,
+    marginBottom: 10,
+    gap: 8,
   },
   searchBox: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#ffffff',
@@ -1218,44 +1387,60 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: colors.text,
   },
-  segmentedControl: {
-    flexDirection: 'row',
-    backgroundColor: '#e5e7eb',
-    marginHorizontal: 16,
-    borderRadius: 10,
-    padding: 3,
-    marginBottom: 16,
-  },
-  segmentBtn: {
-    flex: 1,
-    paddingVertical: 6,
-    alignItems: 'center',
-    borderRadius: 8,
-  },
-  segmentBtnActive: {
+  filterTriggerBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
     backgroundColor: '#ffffff',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 2,
-  },
-  tabsContainer: {
-    marginBottom: 12,
-    height: 36,
-  },
-  tab: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: colors.surface,
-    marginRight: 8,
     borderWidth: 1,
     borderColor: colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
   },
-  activeTab: {
+  filterTriggerBtnActive: {
     backgroundColor: colors.primary,
     borderColor: colors.primary,
+  },
+  filterBadge: {
+    position: 'absolute',
+    top: -5,
+    right: -5,
+    backgroundColor: '#ef4444',
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+    borderWidth: 1.5,
+    borderColor: '#ffffff',
+  },
+  activeFiltersBar: {
+    paddingHorizontal: 16,
+    marginBottom: 10,
+  },
+  activeFiltersContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  activeFilterPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 16,
+    gap: 6,
+  },
+  clearAllFiltersBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   actionBar: {
     flexDirection: 'row',
@@ -1596,79 +1781,140 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     marginLeft: 8,
   },
-  modalOverlay: {
+  filterModalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
+    justifyContent: 'flex-end',
   },
-  modalContent: {
+  filterModalContent: {
     backgroundColor: '#ffffff',
-    borderRadius: 20,
-    padding: 20,
-    width: '100%',
-    maxWidth: 380,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
-    elevation: 5,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    maxHeight: '85%',
+    paddingTop: 16,
+    paddingBottom: 24,
   },
-  modalHeader: {
+  filterModalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    paddingHorizontal: 20,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
   },
-  dateInputGroup: {
-    marginBottom: 8,
-  },
-  dateInputLabel: {
-    fontSize: 11,
-    letterSpacing: 0.6,
-    marginBottom: 6,
-    color: '#475569',
-  },
-  dateInputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  dateInputField: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: '#d1d5db',
+  modalActiveBadge: {
+    backgroundColor: colors.primary,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
     borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 14,
-    color: '#0f172a',
-    backgroundColor: '#f8fafc',
+    marginLeft: 6,
   },
-  quickDateBtn: {
-    marginLeft: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    backgroundColor: '#fee2e2',
-    borderRadius: 10,
-  },
-  modalActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 10,
-    marginTop: 20,
-  },
-  modalCancelBtn: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 10,
+  modalCloseBtn: {
+    padding: 6,
+    borderRadius: 20,
     backgroundColor: '#f1f5f9',
   },
-  modalApplyBtn: {
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderRadius: 10,
+  filterModalScroll: {
+    paddingHorizontal: 20,
+    paddingTop: 14,
+  },
+  filterSection: {
+    marginBottom: 20,
+  },
+  filterSectionTitle: {
+    fontSize: 12,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+    marginBottom: 10,
+    color: '#64748b',
+  },
+  chipGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: '#f8fafc',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    gap: 6,
+  },
+  filterChipActive: {
     backgroundColor: colors.primary,
+    borderColor: colors.primary,
+  },
+  filterChipCountBadge: {
+    backgroundColor: '#e2e8f0',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 10,
+  },
+  filterChipCountBadgeActive: {
+    backgroundColor: 'rgba(255,255,255,0.25)',
+  },
+  inlineCustomDateBox: {
+    marginTop: 12,
+    padding: 12,
+    backgroundColor: '#f8fafc',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  dateInputRowInline: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  inlineDateField: {
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    fontSize: 13,
+    backgroundColor: '#ffffff',
+    color: '#0f172a',
+  },
+  quickTodayBtn: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: '#eff6ff',
+    borderRadius: 6,
+  },
+  filterModalFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: '#f1f5f9',
+    gap: 12,
+  },
+  filterResetBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  filterApplyBtn: {
+    flex: 1.5,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   center: {
     flex: 1,

@@ -32,12 +32,16 @@ const capitalizeName = (name: string) => {
 };
 
 const getCourierTrackingUrl = (awbNo: string, courierPartner: string) => {
+  if (!awbNo) return null;
   const partner = (courierPartner || '').toLowerCase();
-  if (partner.includes('dtdc')) return `https://www.dtdc.in/trace.asp?strCnno=${awbNo}`;
-  if (partner.includes('professional')) return `https://tpcglobe.com/track-info.aspx?id=${awbNo}`;
+  if (partner.includes('dtdc')) return `https://www.dtdc.in/trace.asp?strCnno=${encodeURIComponent(awbNo)}`;
+  if (partner.includes('professional')) return `https://tpcglobe.com/track-info.aspx?id=${encodeURIComponent(awbNo)}`;
   if (partner.includes('india post') || partner.includes('indian post'))
     return `https://www.indiapost.gov.in/vas/pages/trackConsignment.aspx`;
-  return 'https://www.stcourier.com/';
+  if (partner.includes('st courier') || partner.includes('stcourier')) {
+    return 'https://www.stcourier.com/';
+  }
+  return null;
 };
 
 // ── Status Pill ──
@@ -61,7 +65,13 @@ export default function OrderDetailScreen() {
   const [loadingTracking, setLoadingTracking] = useState(false);
   const [loadingAction, setLoadingAction] = useState(false);
   const [awbInput, setAwbInput] = useState('');
-  const [courierInput, setCourierInput] = useState('ST Courier');
+  const [courierInput, setCourierInput] = useState(initialOrder?.courierPartner || 'Professional Courier');
+
+  useEffect(() => {
+    if (order?.courierPartner) {
+      setCourierInput(order.courierPartner);
+    }
+  }, [order?.courierPartner]);
 
   const [permission, requestPermission] = useCameraPermissions();
   const [isScanning, setIsScanning] = useState(false);
@@ -90,7 +100,16 @@ export default function OrderDetailScreen() {
         const res = await api.get(`/track/${encodeURIComponent(order.awbNo)}`);
         if (res.data.success && res.data.tracking) {
           if (res.data.tracking.result) {
-            setTrackingHistory(res.data.tracking.result);
+            const raw = res.data.tracking.result;
+            const isManual = !/st\s*courier/i.test(order?.courierPartner || courierInput || '');
+            const sanitized = isManual
+              ? raw.map((ev: any) => ({
+                  ...ev,
+                  location: (!ev.location || /st\s*courier/i.test(ev.location)) ? (order?.courierPartner || courierInput || 'Courier') : ev.location,
+                  status: (ev.status && /st\s*courier/i.test(ev.status)) ? ev.status.replace(/st\s*courier/gi, order?.courierPartner || courierInput || 'Courier') : ev.status
+                }))
+              : raw;
+            setTrackingHistory(sanitized);
           }
           setOrder((prev: any) => ({
             ...prev,
@@ -168,6 +187,48 @@ export default function OrderDetailScreen() {
       if (res.data.success) setOrder((p: any) => ({ ...p, status: 'shipped', awbNo: awbInput, courierPartner: courierInput }));
     } catch { Alert.alert('Error', 'Failed to fulfill order'); }
     finally { setLoadingAction(false); }
+  };
+
+  const [isEditingCourier, setIsEditingCourier] = useState(false);
+  const [editAwb, setEditAwb] = useState('');
+  const [editCourier, setEditCourier] = useState('');
+
+  const startEditingCourier = () => {
+    setEditAwb(order?.awbNo || '');
+    setEditCourier(order?.courierPartner || courierInput || 'Professional Courier');
+    setIsEditingCourier(true);
+  };
+
+  const handleSaveCourierEdit = async () => {
+    if (!editAwb.trim()) return Alert.alert('Required', 'Please enter an AWB number.');
+    try {
+      setLoadingAction(true);
+      const isManual = !/st\s*courier/i.test(editCourier);
+      const res = await api.put('/update-status', {
+        orderId: order.id,
+        courierPartner: editCourier,
+        awbNo: editAwb.trim(),
+        allowAwbUpdate: true,
+        trackingUpdate: isManual ? {
+          status: order.status === 'delivered' ? `Delivered by ${editCourier}` : `Dispatched via ${editCourier}`,
+          location: editCourier,
+        } : null,
+      });
+      if (res.data.success) {
+        setOrder((p: any) => ({
+          ...p,
+          courierPartner: editCourier,
+          awbNo: editAwb.trim(),
+        }));
+        setCourierInput(editCourier);
+        setIsEditingCourier(false);
+        Alert.alert('Success', `Courier updated to ${editCourier}`);
+      }
+    } catch (err: any) {
+      Alert.alert('Error', err?.response?.data?.message || 'Failed to update courier');
+    } finally {
+      setLoadingAction(false);
+    }
   };
 
   // ── Refund State & Handlers ──
@@ -305,7 +366,7 @@ export default function OrderDetailScreen() {
   const itemsSubtotal = order.items?.reduce((s: number, i: any) => s + parseFloat(i.price) * i.quantity, 0) || 0;
   const totalQty = order.items?.reduce((s: number, i: any) => s + i.quantity, 0) || 0;
   const isPaid = order.status !== 'pending' && order.status !== 'cancelled';
-  const isShipped = order.status === 'shipped' || order.status === 'delivered';
+  const isShipped = order.status === 'shipped' || order.status === 'delivered' || Boolean(order.awbNo && String(order.awbNo).trim());
   const trackingUrl = order.awbNo ? getCourierTrackingUrl(order.awbNo, order.courierPartner) : null;
   const shippingCost = Math.max(0, order.totalAmount - itemsSubtotal);
   const orderDate = new Date(order.createdAt || Date.now()).toLocaleString('en-IN', {
@@ -520,6 +581,30 @@ export default function OrderDetailScreen() {
               <Typography variant="caption" color={'#374151'} weight="bold" style={{ marginBottom: 6, marginTop: 16, letterSpacing: 0.4 }}>
                 COURIER PARTNER
               </Typography>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: 8 }}>
+                {['Professional Courier', 'ST Courier', 'DTDC', 'India Post'].map((opt) => (
+                  <TouchableOpacity
+                    key={opt}
+                    onPress={() => setCourierInput(opt)}
+                    style={{
+                      paddingHorizontal: 10,
+                      paddingVertical: 5,
+                      borderRadius: 16,
+                      backgroundColor: courierInput.toLowerCase() === opt.toLowerCase() ? colors.primary : '#f3f4f6',
+                      marginRight: 6,
+                      marginBottom: 6,
+                    }}
+                  >
+                    <Typography
+                      variant="caption"
+                      color={courierInput.toLowerCase() === opt.toLowerCase() ? '#fff' : '#374151'}
+                      weight="bold"
+                    >
+                      {opt}
+                    </Typography>
+                  </TouchableOpacity>
+                ))}
+              </View>
               <View style={styles.input}>
                 <TextInput
                   style={styles.inputText}
@@ -545,7 +630,22 @@ export default function OrderDetailScreen() {
           ) : (
             <View style={styles.section}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                <Typography variant="body" weight="bold" color={colors.text} style={{ fontSize: 15 }}>Tracking</Typography>
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Typography variant="body" weight="bold" color={colors.text} style={{ fontSize: 15 }}>Tracking</Typography>
+                  <View style={{
+                    marginLeft: 8,
+                    paddingHorizontal: 8,
+                    paddingVertical: 2,
+                    borderRadius: 12,
+                    backgroundColor: /st\s*courier/i.test(order.courierPartner || '') ? '#eff6ff' : '#f3f4f6',
+                    borderWidth: 1,
+                    borderColor: /st\s*courier/i.test(order.courierPartner || '') ? '#bfdbfe' : '#e5e7eb'
+                  }}>
+                    <Typography variant="caption" color={/st\s*courier/i.test(order.courierPartner || '') ? '#1d4ed8' : '#374151'} weight="bold" style={{ fontSize: 11 }}>
+                      {/st\s*courier/i.test(order.courierPartner || '') ? 'ST Courier API' : 'Manual Tracking'}
+                    </Typography>
+                  </View>
+                </View>
                 {trackingUrl && (
                   <TouchableOpacity onPress={() => Linking.openURL(trackingUrl)}>
                     <Typography variant="caption" color={colors.primary} weight="bold">View on web</Typography>
@@ -553,17 +653,99 @@ export default function OrderDetailScreen() {
                 )}
               </View>
 
-              <View style={styles.trackingMeta}>
-                <View style={{ flex: 1 }}>
-                  <Typography variant="caption" color={'#374151'}>AWB</Typography>
-                  <Typography variant="body" color={colors.text} weight="bold" style={{ marginTop: 2 }}>{order.awbNo}</Typography>
+              {isEditingCourier ? (
+                <View style={{ backgroundColor: '#f9fafb', borderRadius: 10, padding: 12, borderWidth: 1, borderColor: colors.border, marginBottom: 16 }}>
+                  <Typography variant="caption" color={'#374151'} weight="bold" style={{ marginBottom: 6 }}>
+                    EDIT AWB NUMBER
+                  </Typography>
+                  <View style={[styles.input, { marginBottom: 12, backgroundColor: '#fff' }]}>
+                    <TextInput
+                      style={styles.inputText}
+                      placeholder="AWB number"
+                      value={editAwb}
+                      onChangeText={setEditAwb}
+                      selectionColor={colors.primary}
+                    />
+                  </View>
+
+                  <Typography variant="caption" color={'#374151'} weight="bold" style={{ marginBottom: 6 }}>
+                    COURIER PARTNER
+                  </Typography>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginBottom: 8 }}>
+                    {['Professional Courier', 'ST Courier', 'DTDC', 'India Post'].map((opt) => (
+                      <TouchableOpacity
+                        key={opt}
+                        onPress={() => setEditCourier(opt)}
+                        style={{
+                          paddingHorizontal: 10,
+                          paddingVertical: 5,
+                          borderRadius: 16,
+                          backgroundColor: editCourier.toLowerCase() === opt.toLowerCase() ? colors.primary : '#fff',
+                          borderWidth: 1,
+                          borderColor: editCourier.toLowerCase() === opt.toLowerCase() ? colors.primary : colors.border,
+                          marginRight: 6,
+                          marginBottom: 6,
+                        }}
+                      >
+                        <Typography
+                          variant="caption"
+                          color={editCourier.toLowerCase() === opt.toLowerCase() ? '#fff' : '#374151'}
+                          weight="bold"
+                        >
+                          {opt}
+                        </Typography>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                  <View style={[styles.input, { marginBottom: 14, backgroundColor: '#fff' }]}>
+                    <TextInput
+                      style={styles.inputText}
+                      value={editCourier}
+                      onChangeText={setEditCourier}
+                      selectionColor={colors.primary}
+                    />
+                  </View>
+
+                  <View style={{ flexDirection: 'row' }}>
+                    <TouchableOpacity
+                      style={[styles.cancelBtn, { flex: 1, alignItems: 'center', marginRight: 8 }]}
+                      onPress={() => setIsEditingCourier(false)}
+                      disabled={loadingAction}
+                    >
+                      <Typography variant="body" color={colors.text} weight="bold">Cancel</Typography>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.confirmRefundBtn, { flex: 1, alignItems: 'center' }]}
+                      onPress={handleSaveCourierEdit}
+                      disabled={loadingAction}
+                    >
+                      {loadingAction ? (
+                        <ActivityIndicator color="#fff" size="small" />
+                      ) : (
+                        <Typography variant="body" color="#fff" weight="bold">Save</Typography>
+                      )}
+                    </TouchableOpacity>
+                  </View>
                 </View>
-                <View style={styles.trackingMetaDivider} />
-                <View style={{ flex: 1 }}>
-                  <Typography variant="caption" color={'#374151'}>Courier</Typography>
-                  <Typography variant="body" color={colors.text} weight="bold" style={{ marginTop: 2 }}>{order.courierPartner}</Typography>
+              ) : (
+                <View style={styles.trackingMeta}>
+                  <View style={{ flex: 1 }}>
+                    <Typography variant="caption" color={'#374151'}>AWB</Typography>
+                    <Typography variant="body" color={colors.text} weight="bold" style={{ marginTop: 2 }}>{order.awbNo}</Typography>
+                  </View>
+                  <View style={styles.trackingMetaDivider} />
+                  <View style={{ flex: 1 }}>
+                    <Typography variant="caption" color={'#374151'}>Courier</Typography>
+                    <Typography variant="body" color={colors.text} weight="bold" style={{ marginTop: 2 }}>{order.courierPartner || 'Professional Courier'}</Typography>
+                  </View>
+                  <TouchableOpacity
+                    style={{ alignSelf: 'center', padding: 6 }}
+                    onPress={startEditingCourier}
+                  >
+                    <MaterialCommunityIcons name="pencil-outline" size={18} color={colors.primary} />
+                  </TouchableOpacity>
                 </View>
-              </View>
+              )}
 
               {loadingTracking ? (
                 <ActivityIndicator size="small" color={colors.primary} style={{ marginVertical: 20 }} />
@@ -581,7 +763,11 @@ export default function OrderDetailScreen() {
                         </Typography>
                         <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 3 }}>
                           {ev.location && (
-                            <Typography variant="caption" color={'#374151'} style={{ marginRight: 10 }}>{ev.location}</Typography>
+                            <Typography variant="caption" color={'#374151'} style={{ marginRight: 10 }}>
+                              {!/st\s*courier/i.test(order?.courierPartner || courierInput || '') && /st\s*courier/i.test(ev.location)
+                                ? (order?.courierPartner || courierInput || 'Courier')
+                                : ev.location}
+                            </Typography>
                           )}
                           {ev.date && (
                             <Typography variant="caption" color={'#374151'}>
@@ -594,14 +780,32 @@ export default function OrderDetailScreen() {
                   ))}
                 </View>
               ) : (
-                <Typography variant="body" color={'#374151'} style={{ textAlign: 'center', marginVertical: 20 }}>
-                  No tracking updates yet
-                </Typography>
+                <View style={{ marginVertical: 20, alignItems: 'center' }}>
+                  <Typography variant="body" color={'#374151'} style={{ textAlign: 'center' }}>
+                    {/st\s*courier/i.test(order.courierPartner || '')
+                      ? 'No live tracking updates yet from ST Courier'
+                      : `Manual tracking updates recorded for ${order.courierPartner || 'selected courier'}`}
+                  </Typography>
+                </View>
               )}
 
-              <TouchableOpacity style={styles.unfulfillBtn} onPress={handleUnfulfill} disabled={loadingAction}>
-                <Typography variant="body" color={colors.error} weight="bold">Undo Fulfillment</Typography>
-              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', marginTop: 16 }}>
+                {!isEditingCourier && (
+                  <TouchableOpacity
+                    style={[styles.cancelBtn, { flex: 1, alignItems: 'center', justifyContent: 'center', marginRight: 8 }]}
+                    onPress={startEditingCourier}
+                  >
+                    <Typography variant="body" color={colors.text} weight="bold">Edit Courier</Typography>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  style={[styles.unfulfillBtn, { flex: 1, marginTop: 0 }]}
+                  onPress={handleUnfulfill}
+                  disabled={loadingAction}
+                >
+                  <Typography variant="body" color={colors.error} weight="bold">Undo Fulfillment</Typography>
+                </TouchableOpacity>
+              </View>
             </View>
           )}
 

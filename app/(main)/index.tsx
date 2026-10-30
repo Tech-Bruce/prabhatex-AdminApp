@@ -8,6 +8,9 @@ import {
   Animated,
   Easing,
   Dimensions,
+  Modal,
+  TextInput,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Typography } from '../../src/components/Typography';
@@ -53,8 +56,21 @@ const formatCompactNumber = (val: number | string) => {
   return num.toString();
 };
 
+const formatDateVal = (d: Date) => {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 const formatDateLabel = (dateStr: string) => {
   if (!dateStr) return '';
+  if (dateStr.includes(':')) {
+    const [h] = dateStr.split(':').map(Number);
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const h12 = h % 12 || 12;
+    return `${h12} ${ampm}`;
+  }
   const parts = dateStr.split('-');
   if (parts.length === 3) {
     const [, m, d] = parts.map(Number);
@@ -111,10 +127,10 @@ const TABS = [
 ];
 
 const PERIODS = [
-  { id: 'overall', label: 'Overall' },
-  { id: 'monthly', label: 'Monthly' },
-  { id: 'weekly', label: 'Weekly' },
   { id: 'daily', label: 'Daily' },
+  { id: 'weekly', label: 'Weekly' },
+  { id: 'monthly', label: 'Monthly' },
+  { id: 'overall', label: 'Overall' },
 ];
 
 function KPIChip({
@@ -153,11 +169,20 @@ function KPIChip({
 export default function DashboardScreen() {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState('revenue');
-  const [period, setPeriod] = useState('overall'); // Default to 'overall' so user sees overall report immediately!
+  const [period, setPeriod] = useState('daily'); // Default to 'daily' (Today) as requested
+  const [customStartDate, setCustomStartDate] = useState('');
+  const [customEndDate, setCustomEndDate] = useState('');
+  const [tempStartDate, setTempStartDate] = useState('');
+  const [tempEndDate, setTempEndDate] = useState('');
+  const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
+  const [selectedPresetInModal, setSelectedPresetInModal] = useState<string>('today');
+
   const [data, setData] = useState<any>(null);
   const [allOrdersList, setAllOrdersList] = useState<any[]>([]);
   const [overallRevenueData, setOverallRevenueData] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Graph preferences
   const [graphViewMode, setGraphViewMode] = useState<'curve' | 'bars'>('curve');
@@ -186,39 +211,93 @@ export default function DashboardScreen() {
     ]).start();
   };
 
-  const fetchData = useCallback(async () => {
-    try {
-      setLoading(true);
-      const params = period === 'overall' ? {} : { period };
-
-      const [resAnalytics, resAllOrders, resOverallRevenue] = await Promise.allSettled([
-        api.get(`/dashboard/analytics/${activeTab}`, { params }),
-        api.get('/all-orders'),
-        api.get('/dashboard/analytics/revenue', { params: { startDate: '2020-01-01', endDate: '2026-12-31' } }),
-      ]);
-
-      if (resAnalytics.status === 'fulfilled') {
-        setData(resAnalytics.value.data);
-      }
-      if (resAllOrders.status === 'fulfilled') {
-        const raw = resAllOrders.value.data?.orders || resAllOrders.value.data || [];
-        setAllOrdersList(Array.isArray(raw) ? raw : []);
-      }
-      if (resOverallRevenue.status === 'fulfilled') {
-        setOverallRevenueData(resOverallRevenue.value.data);
-      }
-
-      animateIn();
-    } catch (err) {
-      console.error('Fetch dashboard telemetry error:', err);
-    } finally {
-      setLoading(false);
+  // ── Client-side Instant Period Filtered Orders ──────────────────────────────
+  const filteredOrders = useMemo(() => {
+    if (!allOrdersList.length) return [];
+    if (period === 'overall' && !customStartDate && !customEndDate) {
+      return allOrdersList;
     }
-  }, [activeTab, period]);
 
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    const now = new Date();
+    let startMs = 0;
+    let endMs = Infinity;
+
+    if (customStartDate && customEndDate) {
+      const [sy, sm, sd] = customStartDate.split('-').map(Number);
+      const [ey, em, ed] = customEndDate.split('-').map(Number);
+      const s = new Date(sy, sm - 1, sd, 0, 0, 0, 0);
+      const e = new Date(ey, em - 1, ed, 23, 59, 59, 999);
+      startMs = s.getTime();
+      endMs = e.getTime();
+    } else if (period === 'daily') {
+      const s = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+      const e = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+      startMs = s.getTime();
+      endMs = e.getTime();
+    } else if (period === 'weekly') {
+      const s = new Date(now);
+      s.setDate(s.getDate() - 7);
+      s.setHours(0, 0, 0, 0);
+      startMs = s.getTime();
+      endMs = now.getTime();
+    } else if (period === 'monthly') {
+      const s = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+      startMs = s.getTime();
+      endMs = now.getTime();
+    }
+
+    return allOrdersList.filter((o: any) => {
+      if (!o.createdAt) return false;
+      const t = new Date(o.createdAt).getTime();
+      return t >= startMs && t <= endMs;
+    });
+  }, [allOrdersList, period, customStartDate, customEndDate]);
+
+  // ── Selected Period Metrics (Calculated instantly with zero latency) ────────
+  const periodReport = useMemo(() => {
+    let sales = 0;
+    let orders = 0;
+    let deliveredCount = 0;
+    let cancelledCount = 0;
+    let inProgressCount = 0;
+    let codCount = 0;
+    let prepaidCount = 0;
+
+    const validStatuses = ['paid', 'processing', 'shipped', 'delivered'];
+
+    filteredOrders.forEach((o: any) => {
+      const s = String(o.status || '').toLowerCase().trim();
+      const amt = Number(o.totalAmount) || 0;
+      const isCod = String(o.paymentMethod || '').toLowerCase().trim() === 'cod';
+
+      if (s === 'delivered') deliveredCount++;
+      else if (s === 'cancelled') cancelledCount++;
+      else inProgressCount++;
+
+      if (isCod) codCount++;
+      else prepaidCount++;
+
+      if (validStatuses.includes(s) || (s !== 'cancelled' && amt > 0)) {
+        sales += amt;
+        orders++;
+      }
+    });
+
+    const aov = orders > 0 ? Math.round(sales / orders) : 0;
+    const deliveryRate = orders > 0 ? Math.round((deliveredCount / orders) * 100) : 0;
+
+    return {
+      sales,
+      orders,
+      aov,
+      deliveredCount,
+      cancelledCount,
+      inProgressCount,
+      codCount,
+      prepaidCount,
+      deliveryRate,
+    };
+  }, [filteredOrders]);
 
   // ── Overall Lifetime Performance Summary (Across Store History) ─────────────
   const overallLifetimeReport = useMemo(() => {
@@ -266,15 +345,150 @@ export default function DashboardScreen() {
     };
   }, [allOrdersList]);
 
+  // ── Fetch Analytics with Concrete Start & End Dates ─────────────────────────
+  const fetchAnalytics = useCallback(async (tab: string, p: string, start?: string, end?: string) => {
+    try {
+      setAnalyticsLoading(true);
+      const params: Record<string, string> = {};
+
+      if (start && end) {
+        params.startDate = start;
+        params.endDate = end;
+      } else {
+        const now = new Date();
+        const todayStr = formatDateVal(now);
+        if (p === 'daily') {
+          params.startDate = todayStr;
+          params.endDate = todayStr;
+        } else if (p === 'weekly') {
+          const past = new Date(now);
+          past.setDate(past.getDate() - 7);
+          params.startDate = formatDateVal(past);
+          params.endDate = todayStr;
+        } else if (p === 'monthly') {
+          const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+          params.startDate = formatDateVal(startOfMonth);
+          params.endDate = todayStr;
+        }
+      }
+
+      const res = await api.get(`/dashboard/analytics/${tab}`, { params });
+      setData(res.data);
+      animateIn();
+    } catch (err) {
+      console.error(`Fetch ${tab} analytics error:`, err);
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  }, []);
+
+  // Initial load (Starts with Daily / Today)
+  useEffect(() => {
+    let isMounted = true;
+    const loadInit = async () => {
+      try {
+        setInitialLoading(true);
+        const todayStr = formatDateVal(new Date());
+        const [resAnalytics, resAllOrders, resOverallRevenue] = await Promise.allSettled([
+          api.get(`/dashboard/analytics/${activeTab}`, { params: { startDate: todayStr, endDate: todayStr } }),
+          api.get('/all-orders'),
+          api.get('/dashboard/analytics/revenue', { params: { startDate: '2020-01-01', endDate: '2026-12-31' } }),
+        ]);
+
+        if (!isMounted) return;
+
+        if (resAnalytics.status === 'fulfilled') {
+          setData(resAnalytics.value.data);
+        }
+        if (resAllOrders.status === 'fulfilled') {
+          const raw = resAllOrders.value.data?.orders || resAllOrders.value.data || [];
+          setAllOrdersList(Array.isArray(raw) ? raw : []);
+        }
+        if (resOverallRevenue.status === 'fulfilled') {
+          setOverallRevenueData(resOverallRevenue.value.data);
+        }
+        animateIn();
+      } catch (err) {
+        console.error('Fetch dashboard initial error:', err);
+      } finally {
+        if (isMounted) setInitialLoading(false);
+      }
+    };
+
+    loadInit();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // Re-fetch analytics when activeTab or filter timeframe changes
+  useEffect(() => {
+    if (!initialLoading) {
+      fetchAnalytics(activeTab, period, customStartDate, customEndDate);
+    }
+  }, [activeTab, period, customStartDate, customEndDate, fetchAnalytics, initialLoading]);
+
+  // Pull to refresh
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      const now = new Date();
+      const todayStr = formatDateVal(now);
+      const params: Record<string, string> = {};
+      if (customStartDate && customEndDate) {
+        params.startDate = customStartDate;
+        params.endDate = customEndDate;
+      } else if (period === 'daily') {
+        params.startDate = todayStr;
+        params.endDate = todayStr;
+      } else if (period === 'weekly') {
+        const past = new Date(now);
+        past.setDate(past.getDate() - 7);
+        params.startDate = formatDateVal(past);
+        params.endDate = todayStr;
+      } else if (period === 'monthly') {
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+        params.startDate = formatDateVal(startOfMonth);
+        params.endDate = todayStr;
+      }
+
+      const [resAnalytics, resAllOrders, resOverallRevenue] = await Promise.allSettled([
+        api.get(`/dashboard/analytics/${activeTab}`, { params }),
+        api.get('/all-orders'),
+        api.get('/dashboard/analytics/revenue', { params: { startDate: '2020-01-01', endDate: '2026-12-31' } }),
+      ]);
+
+      if (resAnalytics.status === 'fulfilled') setData(resAnalytics.value.data);
+      if (resAllOrders.status === 'fulfilled') {
+        const raw = resAllOrders.value.data?.orders || resAllOrders.value.data || [];
+        setAllOrdersList(Array.isArray(raw) ? raw : []);
+      }
+      if (resOverallRevenue.status === 'fulfilled') setOverallRevenueData(resOverallRevenue.value.data);
+      animateIn();
+    } catch (err) {
+      console.error('Refresh error:', err);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [activeTab, period, customStartDate, customEndDate]);
+
   // ── Sales Ups & Downs Analysis ──────────────────────────────────────────────
   const salesAnalysis = useMemo(() => {
     let sourceList: any[] = [];
-    if (period === 'overall') {
+    const isOverall = period === 'overall' && !customStartDate && !customEndDate;
+
+    if (isOverall) {
       sourceList = overallRevenueData?.monthly?.length
         ? overallRevenueData.monthly
         : (data?.monthly || data?.daily || []);
+    } else if (period === 'daily' || (customStartDate && customEndDate && customStartDate === customEndDate)) {
+      sourceList = data?.hourly?.length ? data.hourly : (data?.daily || []);
+    } else if (period === 'weekly') {
+      sourceList = data?.weekly?.length ? data.weekly : (data?.daily || []);
+    } else if (period === 'monthly') {
+      sourceList = data?.monthly?.length ? data.monthly : (data?.daily || []);
     } else {
-      sourceList = data?.[period] || [];
+      sourceList = data?.[period] || data?.daily || [];
     }
 
     if (sourceList.length === 0) {
@@ -286,8 +500,8 @@ export default function DashboardScreen() {
         avgRevenue: 0,
         upCount: 0,
         downCount: 0,
-        totalPeriodSales: 0,
-        totalPeriodOrders: 0,
+        totalPeriodSales: periodReport.sales,
+        totalPeriodOrders: periodReport.orders,
       };
     }
 
@@ -319,7 +533,7 @@ export default function DashboardScreen() {
     const historySeries = sourceList.map((item, idx) => {
       const rev = Number(item.revenue) || 0;
       const orders = Number(item.orders) || 0;
-      const label = item.date || item.week || item.month || `P${idx + 1}`;
+      const label = item.hour || item.date || item.week || item.month || `P${idx + 1}`;
       let changePct = 0;
       let isUp = true;
 
@@ -339,6 +553,9 @@ export default function DashboardScreen() {
         else downCount++;
       }
 
+      const peakLabel = peak.hour || peak.date || peak.week || peak.month;
+      const troughLabel = trough ? (trough.hour || trough.date || trough.week || trough.month) : null;
+
       return {
         ...item,
         label,
@@ -346,8 +563,8 @@ export default function DashboardScreen() {
         orders,
         changePct,
         isUp,
-        isPeak: label === (peak.date || peak.week || peak.month),
-        isTrough: trough && label === (trough.date || trough.week || trough.month),
+        isPeak: label === peakLabel,
+        isTrough: Boolean(troughLabel && label === troughLabel),
       };
     });
 
@@ -368,7 +585,7 @@ export default function DashboardScreen() {
       totalPeriodSales: sumRev,
       totalPeriodOrders: sumOrders,
     };
-  }, [data, overallRevenueData, period, chartMetric]);
+  }, [data, overallRevenueData, period, chartMetric, customStartDate, customEndDate, periodReport]);
 
   const activeDisplayItem =
     selectedPoint ||
@@ -427,14 +644,53 @@ export default function DashboardScreen() {
 
   // ── Render Revenue Tab ──────────────────────────────────────────────────────
   const renderRevenue = () => {
-    const isOverall = period === 'overall';
-    const totalRev = isOverall ? overallLifetimeReport.lifetimeSales : salesAnalysis.totalPeriodSales;
-    const totalOrd = isOverall ? overallLifetimeReport.lifetimeOrders : salesAnalysis.totalPeriodOrders;
+    const isOverall = period === 'overall' && !customStartDate && !customEndDate;
+    const totalRev = isOverall ? overallLifetimeReport.lifetimeSales : periodReport.sales;
+    const totalOrd = isOverall ? overallLifetimeReport.lifetimeOrders : periodReport.orders;
     const avgOrd = totalOrd > 0 ? Math.round(totalRev / totalOrd) : 0;
+    const currentReport = isOverall ? overallLifetimeReport : periodReport;
+
+    const getHeroInfo = () => {
+      if (customStartDate && customEndDate) {
+        return {
+          badge: 'CUSTOM DATE REPORT',
+          title: `Sales Revenue (${customStartDate} to ${customEndDate})`,
+          periodLabel: 'Custom',
+        };
+      }
+      if (period === 'daily') {
+        return {
+          badge: "TODAY'S REPORT",
+          title: "Today's Gross Sales Revenue",
+          periodLabel: 'Today',
+        };
+      }
+      if (period === 'weekly') {
+        return {
+          badge: 'PAST 7 DAYS REPORT',
+          title: 'Weekly Gross Sales Revenue',
+          periodLabel: 'Weekly',
+        };
+      }
+      if (period === 'monthly') {
+        return {
+          badge: "THIS MONTH'S REPORT",
+          title: 'Current Month Gross Revenue',
+          periodLabel: 'Monthly',
+        };
+      }
+      return {
+        badge: 'STORE LIFETIME REPORT',
+        title: 'All-Time Gross Sales Revenue',
+        periodLabel: 'Overall',
+      };
+    };
+
+    const heroInfo = getHeroInfo();
 
     return (
       <Animated.View style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}>
-        {/* ── 1. Executive Overall Lifetime Performance Card ── */}
+        {/* ── 1. Executive Performance Card ── */}
         <Card style={styles.lifetimeHeroCard}>
           <LinearGradient
             colors={['#1e1b4b', '#312e81', '#1e293b']}
@@ -446,7 +702,7 @@ export default function DashboardScreen() {
               <View style={styles.lifetimeHeroBadge}>
                 <MaterialCommunityIcons name="shield-crown" size={14} color="#fbbf24" style={{ marginRight: 4 }} />
                 <Typography variant="caption" weight="extrabold" color="#fbbf24" style={{ fontSize: 10, letterSpacing: 0.8 }}>
-                  STORE LIFETIME REPORT
+                  {heroInfo.badge}
                 </Typography>
               </View>
 
@@ -463,33 +719,37 @@ export default function DashboardScreen() {
 
             <View style={{ marginTop: 12 }}>
               <Typography variant="caption" color="#cbd5e1" weight="medium" style={{ fontSize: 12 }}>
-                All-Time Gross Sales Revenue
+                {heroInfo.title}
               </Typography>
               <Typography variant="h1" weight="extrabold" color="#ffffff" style={styles.lifetimeAmountText}>
-                {formatCurrency(overallLifetimeReport.lifetimeSales)}
+                {formatCurrency(totalRev)}
               </Typography>
             </View>
 
-            {/* Lifetime 3-column stats */}
+            {/* 3-column stats */}
             <View style={styles.lifetimeStatsRow}>
               <View style={styles.lifetimeStatBox}>
-                <Typography variant="caption" color="#94a3b8" style={{ fontSize: 11 }}>Lifetime Orders</Typography>
+                <Typography variant="caption" color="#94a3b8" style={{ fontSize: 11 }}>
+                  {isOverall ? 'Lifetime Orders' : `${heroInfo.periodLabel} Orders`}
+                </Typography>
                 <Typography variant="body" weight="extrabold" color="#ffffff" style={{ fontSize: 15, marginTop: 2 }}>
-                  {overallLifetimeReport.lifetimeOrders.toLocaleString('en-IN')}
+                  {totalOrd.toLocaleString('en-IN')}
                 </Typography>
               </View>
               <View style={styles.lifetimeStatDivider} />
               <View style={styles.lifetimeStatBox}>
-                <Typography variant="caption" color="#94a3b8" style={{ fontSize: 11 }}>Lifetime AOV</Typography>
+                <Typography variant="caption" color="#94a3b8" style={{ fontSize: 11 }}>
+                  {isOverall ? 'Lifetime AOV' : 'Avg Order Value'}
+                </Typography>
                 <Typography variant="body" weight="extrabold" color="#38bdf8" style={{ fontSize: 15, marginTop: 2 }}>
-                  {formatCurrency(overallLifetimeReport.lifetimeAov)}
+                  {formatCurrency(avgOrd)}
                 </Typography>
               </View>
               <View style={styles.lifetimeStatDivider} />
               <View style={styles.lifetimeStatBox}>
                 <Typography variant="caption" color="#94a3b8" style={{ fontSize: 11 }}>Delivery Rate</Typography>
                 <Typography variant="body" weight="extrabold" color="#34d399" style={{ fontSize: 15, marginTop: 2 }}>
-                  {overallLifetimeReport.deliveryRate}%
+                  {currentReport.deliveryRate}%
                 </Typography>
               </View>
             </View>
@@ -499,19 +759,19 @@ export default function DashboardScreen() {
               <View style={[styles.lifetimeMiniChip, { backgroundColor: '#10b98125', borderColor: '#10b98150' }]}>
                 <MaterialCommunityIcons name="check-circle" size={12} color="#34d399" style={{ marginRight: 4 }} />
                 <Typography variant="caption" weight="bold" color="#34d399" style={{ fontSize: 11 }}>
-                  {overallLifetimeReport.deliveredCount} Delivered
+                  {currentReport.deliveredCount} Delivered
                 </Typography>
               </View>
               <View style={[styles.lifetimeMiniChip, { backgroundColor: '#38bdf825', borderColor: '#38bdf850' }]}>
                 <MaterialCommunityIcons name="progress-clock" size={12} color="#38bdf8" style={{ marginRight: 4 }} />
                 <Typography variant="caption" weight="bold" color="#38bdf8" style={{ fontSize: 11 }}>
-                  {overallLifetimeReport.inProgressCount} Processing
+                  {currentReport.inProgressCount} Processing
                 </Typography>
               </View>
               <View style={[styles.lifetimeMiniChip, { backgroundColor: '#f43f5e25', borderColor: '#f43f5e50' }]}>
                 <MaterialCommunityIcons name="close-circle" size={12} color="#fb7185" style={{ marginRight: 4 }} />
                 <Typography variant="caption" weight="bold" color="#fb7185" style={{ fontSize: 11 }}>
-                  {overallLifetimeReport.cancelledCount} Cancelled
+                  {currentReport.cancelledCount} Cancelled
                 </Typography>
               </View>
             </View>
@@ -521,16 +781,16 @@ export default function DashboardScreen() {
         {/* ── 2. Timeframe KPI Grid ── */}
         <View style={styles.kpiGrid}>
           <KPIChip
-            label={isOverall ? 'Lifetime Gross' : `${period} Revenue`}
+            label={isOverall ? 'Lifetime Gross' : `${heroInfo.periodLabel} Revenue`}
             value={formatCompactCurrency(totalRev)}
-            subtitle={isOverall ? 'Store inception to now' : `Total for ${period}`}
+            subtitle={isOverall ? 'Store inception to now' : `Total for ${heroInfo.periodLabel.toLowerCase()}`}
             icon="💰"
             colorHex="#4f46e5"
           />
           <KPIChip
-            label={isOverall ? 'Lifetime Orders' : `${period} Orders`}
+            label={isOverall ? 'Lifetime Orders' : `${heroInfo.periodLabel} Orders`}
             value={totalOrd.toLocaleString('en-IN')}
-            subtitle={`${overallLifetimeReport.codCount} COD • ${overallLifetimeReport.prepaidCount} Paid`}
+            subtitle={`${currentReport.codCount} COD • ${currentReport.prepaidCount} Paid`}
             icon="📦"
             colorHex="#8b5cf6"
           />
@@ -1285,41 +1545,104 @@ export default function DashboardScreen() {
         </ScrollView>
       </View>
 
-      {/* PERIOD TOGGLE (only for Revenue) */}
-      {activeTab === 'revenue' && (
-        <View style={styles.periodToggleContainer}>
+      {/* TIMEFRAME FILTER BAR (Available on all tabs) */}
+      <View style={styles.periodToggleContainer}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.periodScrollContent}>
           <View style={styles.periodToggleBox}>
-            {PERIODS.map((p) => (
-              <TouchableOpacity
-                key={p.id}
-                onPress={() => {
-                  setPeriod(p.id);
-                  setSelectedPoint(null);
-                }}
-                style={[styles.periodBtn, period === p.id && styles.periodBtnActive]}
-              >
-                <Typography
-                  variant="caption"
-                  weight="bold"
-                  color={period === p.id ? '#ffffff' : '#475569'}
-                  style={{ fontSize: 11 }}
+            {PERIODS.map((p) => {
+              const isActive = !customStartDate && period === p.id;
+              return (
+                <TouchableOpacity
+                  key={p.id}
+                  onPress={() => {
+                    setCustomStartDate('');
+                    setCustomEndDate('');
+                    setPeriod(p.id);
+                    setSelectedPoint(null);
+                  }}
+                  style={[styles.periodBtn, isActive && styles.periodBtnActive]}
                 >
-                  {p.label}
-                </Typography>
-              </TouchableOpacity>
-            ))}
+                  <Typography
+                    variant="caption"
+                    weight="bold"
+                    color={isActive ? '#ffffff' : '#475569'}
+                    style={{ fontSize: 11 }}
+                  >
+                    {p.label}
+                  </Typography>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {/* Filter Modal Trigger Button */}
+          <TouchableOpacity
+            style={[styles.filterIconBtn, (Boolean(customStartDate) || period !== 'overall') && styles.filterIconBtnActive]}
+            onPress={() => {
+              setTempStartDate(customStartDate || formatDateVal(new Date()));
+              setTempEndDate(customEndDate || formatDateVal(new Date()));
+              setSelectedPresetInModal(
+                customStartDate ? 'custom' : period === 'overall' ? 'all' : period === 'daily' ? 'today' : period === 'weekly' ? 'week' : 'thisMonth'
+              );
+              setIsFilterModalVisible(true);
+            }}
+            activeOpacity={0.8}
+          >
+            <MaterialCommunityIcons
+              name="tune-variant"
+              size={18}
+              color={customStartDate || period !== 'overall' ? '#ffffff' : '#475569'}
+            />
+            {(Boolean(customStartDate) || period !== 'overall') && <View style={styles.filterDot} />}
+          </TouchableOpacity>
+        </ScrollView>
+      </View>
+
+      {/* Active Filter Pill (if custom range active) */}
+      {Boolean(customStartDate && customEndDate) && (
+        <View style={styles.activeCustomRangeBar}>
+          <View style={styles.activeCustomRangePill}>
+            <MaterialCommunityIcons name="calendar-clock" size={14} color="#4f46e5" />
+            <Typography variant="caption" weight="bold" color="#4f46e5" style={{ fontSize: 11 }}>
+              {customStartDate} to {customEndDate}
+            </Typography>
+            <TouchableOpacity
+              onPress={() => {
+                setCustomStartDate('');
+                setCustomEndDate('');
+                setPeriod('daily');
+              }}
+              style={{ marginLeft: 4 }}
+            >
+              <MaterialCommunityIcons name="close-circle" size={15} color="#6366f1" />
+            </TouchableOpacity>
           </View>
         </View>
       )}
 
       {/* CONTENT */}
-      <ScrollView style={styles.scrollArea} contentContainerStyle={styles.scrollContent}>
-        {loading ? (
+      <ScrollView
+        style={styles.scrollArea}
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#4f46e5']} />}
+      >
+        {initialLoading ? (
           <View style={styles.loaderWrap}>
             <ActivityIndicator size="large" color="#4f46e5" />
+            <Typography variant="caption" color="#64748b" style={{ marginTop: 8 }}>
+              Loading dashboard metrics...
+            </Typography>
           </View>
         ) : (
           <>
+            {analyticsLoading && (
+              <View style={styles.syncingBanner}>
+                <ActivityIndicator size="small" color="#4f46e5" style={{ marginRight: 6 }} />
+                <Typography variant="caption" color="#4f46e5" weight="bold">
+                  Updating telemetry...
+                </Typography>
+              </View>
+            )}
             {activeTab === 'revenue' && renderRevenue()}
             {activeTab === 'orders' && renderOrders()}
             {activeTab === 'products' && renderProducts()}
@@ -1327,6 +1650,203 @@ export default function DashboardScreen() {
           </>
         )}
       </ScrollView>
+
+      {/* FILTER MODAL */}
+      <Modal
+        visible={isFilterModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsFilterModalVisible(false)}
+      >
+        <View style={styles.filterModalOverlay}>
+          <View style={styles.filterModalContainer}>
+            <View style={styles.filterModalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <MaterialCommunityIcons name="tune-variant" size={20} color="#4f46e5" style={{ marginRight: 8 }} />
+                <Typography variant="h3" weight="bold" color="#0f172a">
+                  Filter Dashboard Timeframe
+                </Typography>
+              </View>
+              <TouchableOpacity
+                onPress={() => setIsFilterModalVisible(false)}
+                style={styles.filterModalCloseBtn}
+              >
+                <MaterialCommunityIcons name="close" size={20} color="#64748b" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={{ maxHeight: 420 }} showsVerticalScrollIndicator={false}>
+              <Typography variant="caption" weight="bold" color="#64748b" style={styles.modalSectionLabel}>
+                QUICK TIMEFRAME PRESETS
+              </Typography>
+              <View style={styles.presetGrid}>
+                {[
+                  { id: 'today', label: 'Today (Daily)', icon: 'calendar-today' },
+                  { id: 'week', label: 'Past 7 Days (Weekly)', icon: 'calendar-week' },
+                  { id: 'thisMonth', label: 'This Month (Monthly)', icon: 'calendar-month' },
+                  { id: 'all', label: 'All Time (Overall)', icon: 'infinity' },
+                  { id: 'yesterday', label: 'Yesterday', icon: 'history' },
+                  { id: 'custom', label: 'Custom Date Range', icon: 'calendar-edit' },
+                ].map((item) => {
+                  const isSelected = selectedPresetInModal === item.id;
+                  return (
+                    <TouchableOpacity
+                      key={item.id}
+                      style={[styles.presetOptionBtn, isSelected && styles.presetOptionBtnActive]}
+                      onPress={() => {
+                        setSelectedPresetInModal(item.id);
+                        const now = new Date();
+                        if (item.id === 'all') {
+                          setTempStartDate('');
+                          setTempEndDate('');
+                        } else if (item.id === 'today') {
+                          const t = formatDateVal(now);
+                          setTempStartDate(t);
+                          setTempEndDate(t);
+                        } else if (item.id === 'yesterday') {
+                          const y = new Date(now);
+                          y.setDate(y.getDate() - 1);
+                          const yStr = formatDateVal(y);
+                          setTempStartDate(yStr);
+                          setTempEndDate(yStr);
+                        } else if (item.id === 'week') {
+                          const past = new Date(now);
+                          past.setDate(past.getDate() - 7);
+                          setTempStartDate(formatDateVal(past));
+                          setTempEndDate(formatDateVal(now));
+                        } else if (item.id === 'thisMonth') {
+                          const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+                          setTempStartDate(formatDateVal(startOfMonth));
+                          setTempEndDate(formatDateVal(now));
+                        } else if (item.id === 'custom') {
+                          if (!tempStartDate) setTempStartDate(formatDateVal(now));
+                          if (!tempEndDate) setTempEndDate(formatDateVal(now));
+                        }
+                      }}
+                      activeOpacity={0.7}
+                    >
+                      <MaterialCommunityIcons
+                        name={item.icon as any}
+                        size={16}
+                        color={isSelected ? '#4f46e5' : '#64748b'}
+                        style={{ marginRight: 6 }}
+                      />
+                      <Typography
+                        variant="body"
+                        weight="bold"
+                        color={isSelected ? '#4f46e5' : '#334155'}
+                        style={{ fontSize: 13 }}
+                      >
+                        {item.label}
+                      </Typography>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              {/* Custom Date Range Inputs */}
+              {selectedPresetInModal === 'custom' && (
+                <View style={styles.customDateSection}>
+                  <Typography variant="caption" weight="bold" color="#64748b" style={{ fontSize: 11, marginBottom: 8 }}>
+                    ENTER DATE RANGE (YYYY-MM-DD)
+                  </Typography>
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <View style={{ flex: 1, marginRight: 6 }}>
+                      <Typography variant="caption" weight="bold" color="#64748b" style={{ fontSize: 10, marginBottom: 4 }}>
+                        START DATE
+                      </Typography>
+                      <TextInput
+                        style={styles.modalDateField}
+                        value={tempStartDate}
+                        onChangeText={setTempStartDate}
+                        placeholder="YYYY-MM-DD"
+                        placeholderTextColor="#9ca3af"
+                      />
+                    </View>
+                    <View style={{ flex: 1, marginLeft: 6 }}>
+                      <Typography variant="caption" weight="bold" color="#64748b" style={{ fontSize: 10, marginBottom: 4 }}>
+                        END DATE
+                      </Typography>
+                      <TextInput
+                        style={styles.modalDateField}
+                        value={tempEndDate}
+                        onChangeText={setTempEndDate}
+                        placeholder="YYYY-MM-DD"
+                        placeholderTextColor="#9ca3af"
+                      />
+                    </View>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.quickTodayBtn}
+                    onPress={() => {
+                      const today = formatDateVal(new Date());
+                      setTempStartDate(today);
+                      setTempEndDate(today);
+                    }}
+                  >
+                    <Typography variant="caption" weight="bold" color="#4f46e5">
+                      Set both to Today
+                    </Typography>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </ScrollView>
+
+            <View style={styles.filterModalFooter}>
+              <TouchableOpacity
+                style={styles.filterResetBtn}
+                onPress={() => {
+                  setSelectedPresetInModal('today');
+                  setTempStartDate('');
+                  setTempEndDate('');
+                  setCustomStartDate('');
+                  setCustomEndDate('');
+                  setPeriod('daily');
+                  setIsFilterModalVisible(false);
+                }}
+                activeOpacity={0.8}
+              >
+                <Typography variant="body" weight="bold" color="#dc2626">
+                  Reset (Daily)
+                </Typography>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.filterApplyBtn}
+                onPress={() => {
+                  if (selectedPresetInModal === 'all') {
+                    setPeriod('overall');
+                    setCustomStartDate('');
+                    setCustomEndDate('');
+                  } else if (selectedPresetInModal === 'today') {
+                    setPeriod('daily');
+                    setCustomStartDate('');
+                    setCustomEndDate('');
+                  } else if (selectedPresetInModal === 'week') {
+                    setPeriod('weekly');
+                    setCustomStartDate('');
+                    setCustomEndDate('');
+                  } else if (selectedPresetInModal === 'thisMonth') {
+                    setPeriod('monthly');
+                    setCustomStartDate('');
+                    setCustomEndDate('');
+                  } else {
+                    // custom or yesterday
+                    setCustomStartDate(tempStartDate);
+                    setCustomEndDate(tempEndDate || tempStartDate);
+                    setPeriod('custom');
+                  }
+                  setIsFilterModalVisible(false);
+                }}
+                activeOpacity={0.8}
+              >
+                <Typography variant="body" weight="bold" color="#ffffff">
+                  Apply Filter
+                </Typography>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1373,10 +1893,15 @@ const styles = StyleSheet.create({
   tabBtnActive: { borderBottomColor: '#4f46e5' },
 
   periodToggleContainer: {
-    paddingHorizontal: 20,
-    paddingTop: 14,
+    paddingHorizontal: 16,
+    paddingTop: 12,
     paddingBottom: 4,
-    alignItems: 'flex-end',
+  },
+  periodScrollContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    flexGrow: 1,
   },
   periodToggleBox: {
     flexDirection: 'row',
@@ -1396,6 +1921,162 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 3,
     elevation: 2,
+  },
+  filterIconBtn: {
+    width: 36,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: '#e2e8f0',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 8,
+    position: 'relative',
+  },
+  filterIconBtnActive: {
+    backgroundColor: '#4f46e5',
+  },
+  filterDot: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: '#fbbf24',
+  },
+  activeCustomRangeBar: {
+    paddingHorizontal: 16,
+    paddingTop: 6,
+    paddingBottom: 2,
+    flexDirection: 'row',
+  },
+  activeCustomRangePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 16,
+    gap: 6,
+  },
+  syncingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    marginBottom: 10,
+    backgroundColor: '#eef2ff',
+    borderRadius: 8,
+  },
+  // Modal styles
+  filterModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  filterModalContainer: {
+    width: '100%',
+    maxWidth: 460,
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  filterModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+  },
+  filterModalCloseBtn: {
+    padding: 4,
+  },
+  modalSectionLabel: {
+    fontSize: 10,
+    letterSpacing: 0.8,
+    marginBottom: 10,
+  },
+  presetGrid: {
+    gap: 8,
+    marginBottom: 14,
+  },
+  presetOptionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#f8fafc',
+  },
+  presetOptionBtnActive: {
+    borderColor: '#4f46e5',
+    backgroundColor: '#eef2ff',
+  },
+  customDateSection: {
+    marginTop: 6,
+    padding: 12,
+    backgroundColor: '#f8fafc',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    marginBottom: 10,
+  },
+  modalDateField: {
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#cbd5e1',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: '#0f172a',
+  },
+  quickTodayBtn: {
+    alignSelf: 'flex-start',
+    marginTop: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    backgroundColor: '#eef2ff',
+  },
+  filterModalFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 16,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#f1f5f9',
+    gap: 10,
+  },
+  filterResetBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#fca5a5',
+    backgroundColor: '#fff1f2',
+  },
+  filterApplyBtn: {
+    flex: 1,
+    backgroundColor: '#4f46e5',
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 
   scrollArea: { flex: 1 },
